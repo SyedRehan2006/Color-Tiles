@@ -30,11 +30,14 @@ export interface MatchSettings {
 export interface DriveSettings {
   reverseDelay: number; // s: after stopping, S must be held this long before the car reverses
   bumpStrength: number; // m/s: extra push apart when cars bump (only used when collisions are on)
+  edgeSupport: number; // fraction of the car that must be over tiles to stand (0.5 = falls at half; higher = less hang time)
+  edgePull: number; // m/s^2 slide toward the void at full overhang (0 = none; higher = hanging at the edge slips off sooner)
+  carScale: number; // size multiplier for every car: model, collider and footprint (1 = 1 x 2 m)
 }
 
 // Pick-one settings. The panel builds a drop-down from each list.
 export const CHOICES = {
-  theme: ["candy", "cyberpunk"],
+  theme: ["candy", "cyberpunk", "cyberpunk2", "cyberpunk3", "cyberpunk4", "cyberpunk5", "cyberpunk6"],
   timeOfDay: ["day", "night"],
   tilePalette: ["classic", "themed"], // classic = the original tile colors, themed = colors tuned to the theme
   carShape: ["mixed", "sedan", "truck", "buggy"],
@@ -62,6 +65,8 @@ export interface TouchSettings {
 export interface GameSettings extends RoundSettings, PlatformSettings, MatchSettings, DriveSettings, VisualSettings, TouchSettings {
   showTimer: boolean; // show the countdown number on screen
   collisions: boolean; // cars bump into each other (off = they drive through each other)
+  slowMo: boolean; // slow motion for a moment when the car you watch falls off an edge
+  knockOffCars: boolean; // a car tumbling off an edge can hit and shove cars that are still driving (off = it passes through them)
 }
 
 // Defaults match docs/design-decisions.md: rounds of 6, 5, 4, then 3 seconds
@@ -82,8 +87,13 @@ export const DEFAULT_SETTINGS: GameSettings = {
   colorCount: 6,
   reverseDelay: 0.5,
   bumpStrength: 4,
+  carScale: 1,
+  edgeSupport: 0.7,
+  edgePull: 25,
   showTimer: true,
   collisions: false,
+  knockOffCars: true,
+  slowMo: true,
   theme: "candy",
   timeOfDay: "day",
   tilePalette: "themed",
@@ -120,6 +130,9 @@ export const SETTING_LIMITS: Record<NumberSettingKey, { min: number; max: number
   colorCount: { min: 2, max: 8 },
   reverseDelay: { min: 0, max: 3 },
   bumpStrength: { min: 0, max: 12 },
+  carScale: { min: 0.5, max: 4 },
+  edgeSupport: { min: 0.3, max: 0.95 },
+  edgePull: { min: 0, max: 60 },
 };
 
 // How long the player has to reach a target tile in a given round (1 = the first round)
@@ -160,7 +173,8 @@ export function loadSettings() {
     if (typeof saved.shrinking === "boolean") settings.shrinking = saved.shrinking;
     if (typeof saved.showTimer === "boolean") settings.showTimer = saved.showTimer;
     if (typeof saved.collisions === "boolean") settings.collisions = saved.collisions;
-    if (typeof saved.shadows === "boolean") settings.shadows = saved.shadows;
+    if (typeof saved.knockOffCars === "boolean") settings.knockOffCars = saved.knockOffCars;
+    if (typeof saved.slowMo === "boolean") settings.slowMo = saved.slowMo;    if (typeof saved.shadows === "boolean") settings.shadows = saved.shadows;
     for (const key of Object.keys(CHOICES) as ChoiceKey[]) {
       const v = saved[key];
       if (typeof v === "string" && (CHOICES[key] as readonly string[]).includes(v)) {

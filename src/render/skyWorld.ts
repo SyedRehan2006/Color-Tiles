@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { Look, ThemeId } from "./theme";
+import { isSynthTheme, type Look, type ThemeId } from "./theme";
 
 // Everything around the floating platform: gradient sky, stars, sun/moon, a sea of clouds below,
 // theme props (candy: balloons, lollipops, donuts; cyberpunk: rings, billboards, drones, towers) and
@@ -224,6 +224,8 @@ export class SkyWorld {
 
   // Recolor for a theme + time of day (call whenever either changes)
   apply(theme: ThemeId, look: Look) {
+    this.group.visible = !isSynthTheme(theme); // cyberpunk 3 and 4 have their own scenery (SynthWorld)
+    if (!this.group.visible) return;
     // Gradient: bottom (skyBelow) -> horizon -> top (skyTop)
     const pos = this.domeGeo.attributes.position;
     const top = new THREE.Color(look.skyTop);
@@ -242,7 +244,7 @@ export class SkyWorld {
     this.bodyMat.color.setHex(look.bodyColor);
     this.cloudMat.color.setHex(look.cloudColor);
     this.candy.visible = theme === "candy";
-    this.cyber.visible = theme === "cyberpunk";
+    this.cyber.visible = theme !== "candy"; // cyberpunk and cyberpunk 2 share the props for now
     for (const m of this.spaceMats) m.opacity = look.spaceOpacity;
   }
 

@@ -1,5 +1,6 @@
 import * as THREE from "three";
-import type { ThemeId } from "./theme";
+import { isNeonTheme, type ThemeId } from "./theme";
+import { makeRetroCar, type RetroKind } from "./retroCars";
 
 // Low-poly cars built from boxes and cylinders (no model files, so no download). Every car faces -Z and
 // fits the 1 x 0.5 x 2 m collider: the model's origin is the collider's center, so the wheels' bottoms
@@ -51,10 +52,15 @@ function lights(g: THREE.Group, width: number, yFront: number, zFront: number, z
   }
 }
 
+// The neon themes (cyberpunk 2 to 5) use the retro JDM cars (retroCars.ts); the older themes keep these simple ones.
+// The same three choices map onto both sets: sedan = hatch, truck = wedge, buggy = fastback.
+const RETRO: Record<CarShape, RetroKind> = { sedan: "hatch", truck: "wedge", buggy: "fastback" };
+
 // Returns a Group; userData.bodyMaterial is the one material made per car (dispose it when replacing)
 export function makeCarMesh(shape: CarShape, color: number, theme: ThemeId): THREE.Group {
+  if (isNeonTheme(theme)) return makeRetroCar(RETRO[shape], color);
   const g = new THREE.Group();
-  const cyber = theme === "cyberpunk";
+  const cyber = theme !== "candy";
   const body = new THREE.MeshStandardMaterial({
     color,
     roughness: cyber ? 0.3 : 0.55,
@@ -103,4 +109,5 @@ export function makeCarMesh(shape: CarShape, color: number, theme: ThemeId): THR
 export function disposeCarMesh(g: THREE.Group) {
   (g.userData.bodyMaterial as THREE.Material | undefined)?.dispose();
   (g.userData.glowMaterial as THREE.Material | undefined)?.dispose();
+  for (const m of (g.userData.disposables as THREE.Material[] | undefined) ?? []) m.dispose();
 }

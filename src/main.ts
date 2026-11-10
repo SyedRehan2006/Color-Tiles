@@ -4,6 +4,7 @@ import { KeyboardInput, type DriveInput } from "./game/input";
 import { TouchInput } from "./game/touchInput";
 import { Racer } from "./game/racer";
 import { resolveBumps } from "./game/bump";
+import { TumbleFloor } from "./game/tumbleFloor";
 import { BotBrain } from "./game/bot";
 import { ChaseCamera } from "./render/chaseCamera";
 import { TileGrid } from "./game/tileGrid";
@@ -11,7 +12,17 @@ import { createTilePlatform } from "./render/tilePlatform";
 import { RoundController } from "./game/round";
 import { SkyWorld } from "./render/skyWorld";
 import { CAR_SHAPES } from "./render/carModels";
-import { LOOKS, TILE_STYLES, setPalette, tileHex } from "./render/theme";
+import { LOOKS, isGlassTheme, isNeonTheme, isSpeedTheme, isSynthTheme, setPalette, tileHex } from "./render/theme";
+import { wire, wire5 } from "./render/wireParams";
+import { grade, reflection, speedfx, tirefx } from "./render/fxParams";
+import { SpeedFx } from "./render/speedFx";
+import { TireFx } from "./render/tireFx";
+import { EdgeFx } from "./render/edgeFx";
+import { scenery } from "./render/sceneryParams";
+import { SynthWorld } from "./render/synthWorld";
+import { neon } from "./render/neonParams";
+import { createPostFx } from "./render/postFx";
+import { VisualPanel, loadVisualConfig } from "./ui/visualPanel";
 import { Hud } from "./ui/hud";
 import { SettingsPanel } from "./ui/settingsPanel";
 import { loadSettings, settings } from "./game/settings";
@@ -37,6 +48,9 @@ scene.fog = new THREE.Fog(0x87ceeb, 120, 500); // distant things fade into the s
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 const skyWorld = new SkyWorld(scene);
+const tireFx = new TireFx(scene); // skid marks, smoke, sparks (cyberpunk 5)
+const edgeFx = new EdgeFx(scene); // sparks and dust at tile edges (all themes)
+const synthWorld = new SynthWorld(scene); // cyberpunk 3 scenery (hidden for the other themes)
 
 // Camera
 const camera = new THREE.PerspectiveCamera(
@@ -46,7 +60,11 @@ const camera = new THREE.PerspectiveCamera(
   1500,
 );
 const chaseCamera = new ChaseCamera(camera);
+const speedFx = new SpeedFx();
+const devSpeedParam = import.meta.env.DEV ? new URLSearchParams(location.search).get("speed") : null;
+const devSpeedLevel = devSpeedParam !== null ? parseFloat(devSpeedParam) : null;
 chaseCamera.attachMouse(renderer.domElement);
+const postFx = createPostFx(renderer, scene, camera); // bloom for cyberpunk 2 (only used while switched on)
 
 // Lights
 // Colors and strengths come from the theme (applyVisuals). The sun casts the shadows.
@@ -74,12 +92,18 @@ function fitShadow() {
 // Physics world
 // Gravity is stronger than real life (-9.81) so jumps are short and snappy
 const world = new RAPIER.World({ x: 0, y: -36, z: 0 });
-
+loadVisualConfig(); // values saved from the visual panel (cyberpunk 2 tuning)
 loadSettings(); // what you chose in the settings panel last time (timers, platform size, timer switch)
+if (import.meta.env.DEV) {
+  // Dev only: ?theme=cyberpunk5 opens the game in that theme (for quick checks and screenshots)
+  const t = new URLSearchParams(location.search).get("theme");
+  if (t) settings.theme = t as typeof settings.theme;
+}
 
 // The tile platform, centered on the origin, top surface at y = 0 (defaults: 10 x 10 tiles of 6 m).
 // It is visuals + data only. The floor is a rule (see CarController), not a physics collider.
 const tileGrid = new TileGrid(settings.gridSize, settings.tileSize, settings.colorCount);
+const tumbleFloor = new TumbleFloor(world, tileGrid); // tile colliders, only for cars tumbling off an edge
 const platform = createTilePlatform(scene, tileGrid);
 
 // Rounds: pick a color, lay out the tiles, count down. The HUD shows the called color and time.
@@ -87,8 +111,13 @@ const hud = new Hud();
 hud.setTimerVisible(settings.showTimer);
 // Gear button, bottom right: the second function runs when the platform settings change
 new SettingsPanel((show) => hud.setTimerVisible(show), () => applyPlatformSettings(), () => applyVisuals());
+// Palette button, bottom right: live tuning of the cyberpunk 2 look (tiles, glow, sky)
+const visualPanel = new VisualPanel(() => applyLook());
 const rounds = new RoundController(tileGrid, settings);
-rounds.onTilesVanish = (tiles) => platform.vanish(tiles);
+rounds.onTilesVanish = (tiles) => {
+  platform.vanish(tiles);
+  tireFx.fadeAll(); // marks over vanishing tiles must not hang in the air
+};
 rounds.onTilesReturn = (tiles) => platform.restore(tiles);
 rounds.onRoamStart = () => {
   // Only the middle is left: the cars still standing win
@@ -150,15 +179,22 @@ function applyRacerLooks() {
   racers.forEach((r, i) => {
     const shape = settings.carShape === "mixed" ? CAR_SHAPES[i % CAR_SHAPES.length] : settings.carShape;
     r.setLook(shape, settings.theme);
+    r.setReflection(isGlassTheme(settings.theme) && reflection.enabled, reflection.strength);
   });
 }
 
-// Theme, time of day, tile palette, shadows and car shapes: everything about how the world looks
-function applyVisuals() {
+// The look of the world: theme, time of day, tile palette and colors, lights, shadows, glow.
+// Cheap enough to call on every slider move in the visual panel.
+function applyLook() {
   const look = LOOKS[settings.theme][settings.timeOfDay];
+  const c2 = settings.theme === "cyberpunk2";
+  const c3 = isSynthTheme(settings.theme); // cyberpunk 3 and 4 share the scenery
   setPalette(settings.tilePalette, settings.theme);
-  (scene.background as THREE.Color).setHex(look.skyHorizon);
-  (scene.fog as THREE.Fog).color.setHex(look.skyHorizon);
+  (scene.background as THREE.Color).setHex(c3 ? scenery.fogColor : look.skyHorizon);
+  const fog = scene.fog as THREE.Fog;
+  fog.color.setHex(c3 ? scenery.fogColor : (look.fogColor ?? look.skyHorizon));
+  fog.near = c3 ? scenery.fogNear : c2 ? neon.fogNear : 120;
+  fog.far = c3 ? scenery.fogFar : c2 ? neon.fogFar : 500;
   sun.color.setHex(look.sunColor);
   sun.intensity = look.sunIntensity;
   sun.castShadow = settings.shadows;
@@ -166,10 +202,24 @@ function applyVisuals() {
   hemi.groundColor.setHex(look.hemiGround);
   hemi.intensity = look.hemiIntensity;
   skyWorld.apply(settings.theme, look);
-  platform.setStyle(TILE_STYLES[settings.theme]);
+  synthWorld.setVisible(c3);
+  synthWorld.configure();
+  platform.setTheme(settings.theme);
+  platform.updateNeon();
   platform.refreshColors();
+  const c5 = isGlassTheme(settings.theme); // cyberpunk 5 and 6
+  const c6 = isSpeedTheme(settings.theme);
+  postFx.configure(isNeonTheme(settings.theme) && neon.bloomEnabled, neon, c5 && grade.enabled ? grade : null, c6 && speedfx.enabled);
+  for (const r of racers) r.setReflection(c5 && reflection.enabled, reflection.strength);
+  tireFx.setEnabled(c5 && tirefx.enabled);
+}
+
+// Everything: the look, the shadow area, and the car models (heavier, so not for slider moves)
+function applyVisuals() {
+  applyLook();
   fitShadow();
   applyRacerLooks();
+  visualPanel.refresh(); // the panel shows values for the current theme and time of day
 }
 
 // Drop a car from the sky onto a random tile (not one that `used` already has, if possible)
@@ -248,6 +298,8 @@ function restartMatch() {
   matchOver = false;
   overlayUp = false;
   hud.hideGameOver();
+  tumbleFloor.clear();
+  edgeFx.clear();
   tileGrid.resetPlatform(); // the rings that fell come back
   tileGrid.shuffleColors();
   platform.rebuild();
@@ -282,6 +334,7 @@ window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  postFx.setSize(window.innerWidth, window.innerHeight);
 });
 
 // Game loop with a fixed physics timestep (like FixedUpdate + Update)
@@ -312,6 +365,19 @@ let accumulator = 0;
 let last = performance.now();
 
 const camTarget = new THREE.Vector3();
+// Fall effects, blended by the car's speed when it goes over: "slide" values at a stand-still, "fast" values
+// at SLOWMO_FULL_SPEED and above.
+const SLOWMO_FULL_SPEED = 24; // m/s
+const SLOWMO_SCALE = 0.3; // game speed during the slow-mo, fast fall (1 = normal)
+const SLOWMO_SCALE_SLIDE = 0.7; // ... slide off
+const SLOWMO_TIME = 1.0; // s of real time the slow-mo lasts, fast fall
+const SLOWMO_TIME_SLIDE = 0.4; // ... slide off
+const KICK_FAST = 0.55; // camera shake (0..1), fast fall
+const KICK_SLIDE = 0.12; // ... slide off
+let slowTarget = SLOWMO_SCALE; // game speed the current slow-mo eases to
+let slowLeft = 0; // real seconds of slow-mo left
+let timeScale = 1; // current game speed (eased)
+let tumbleKickFor: Racer | null = null; // the car the camera already shook for (so it shakes once per fall)
 
 // Frame-time diagnostics (temporary)
 let fpsSmooth = 60;
@@ -325,7 +391,11 @@ function animate() {
   const rawDt = (now - last) / 1000;
   // Clamp so a long pause (e.g. switching tabs) doesn't cause a huge catch-up
   const frameDt = Math.min(rawDt, 0.1);
-  accumulator += frameDt;
+  // Slow-mo on a fall: the game (physics, bots, round timer) runs slower for a moment, the camera and
+  // the screen effects stay in real time. The speed eases in and out instead of jumping.
+  slowLeft = Math.max(0, slowLeft - frameDt);
+  timeScale += ((slowLeft > 0 && settings.slowMo ? slowTarget : 1) - timeScale) * (1 - Math.exp(-12 * frameDt));
+  accumulator += frameDt * timeScale;
   last = now;
 
   fpsSmooth += (1 / Math.max(rawDt, 0.001) - fpsSmooth) * 0.05;
@@ -335,6 +405,11 @@ function animate() {
     worstShown = worstFrameMs;
     worstFrameMs = 0;
     worstTimer = 0;
+  }
+
+  for (const r of racers) {
+    r.setScale(settings.carScale); // live from the settings panel
+    r.setKnock(settings.knockOffCars);
   }
 
   while (accumulator >= FIXED_DT) {
@@ -356,13 +431,25 @@ function animate() {
     };
     for (const r of racers) {
       if (r.fallen) continue;
+      if (r.tumbling) continue; // a tumbling car is a free rigid body: no steering, no grip, just physics
       const drive = r.brain
         ? r.brain.drive({ x: r.x, z: r.z, yaw: r.yaw, forwardSpeed: r.controller.forwardSpeed }, botView, FIXED_DT)
         : lastDrive;
       r.controller.update(drive, FIXED_DT);
     }
+    for (const r of racers) r.tumbleTick(FIXED_DT);
+    tumbleFloor.sync(racers); // real tile colliders around cars that are tumbling off an edge
     world.step();
-    for (const r of racers) if (!r.fallen) r.controller.resolveGround();
+    for (const r of racers) {
+      if (r.fallen || r.tumbling) continue;
+      const lost = r.controller.resolveGround();
+      if (lost) {
+        r.startTumble(lost); // lost its footing: becomes a free rigid body
+        const v = r.body.linvel();
+        const strength = Math.min(1, Math.hypot(v.x, v.z) / SLOWMO_FULL_SPEED); // 0 = slid off, 1 = fast
+        edgeFx.burst(r, strength);
+      }
+    }
     if (settings.collisions) resolveBumps(racers, settings.bumpStrength);
     if (!matchOver) rounds.update(FIXED_DT); // may drop cars back in when a roam starts
 
@@ -400,7 +487,12 @@ function animate() {
 
   // Draw every car part-way between its last two physics states
   const alpha = accumulator / FIXED_DT;
-  for (const r of racers) r.render(alpha);
+  for (const r of racers) {
+    r.updateLean(frameDt);
+    r.render(alpha);
+  }
+  tireFx.update(frameDt, racers, followed.mesh.position);
+  edgeFx.update(frameDt * timeScale, racers, followed.mesh.position); // follows the slow-mo
 
   // The camera follows you, or a car still in the match once you are out
   if (player.eliminated) {
@@ -416,13 +508,56 @@ function animate() {
 
   // Chase camera follows the smoothed position and heading. It stops following a car that falls
   // (it never goes below y = -1), so you watch the car drop away instead of chasing it down.
+  // Speed effects (cyberpunk 6): how fast the followed car feels, and the camera extras that follow from it
+  const speedOn = isSpeedTheme(settings.theme) && speedfx.enabled;
+  speedFx.update(
+    frameDt,
+    speedOn
+      ? {
+          speed: followed.controller.forwardSpeed,
+          grounded: followed.controller.grounded,
+          drifting: followed.controller.drifting,
+          vy: followed.body.linvel().y,
+          steer: followed === player ? lastDrive.steer : 0,
+        }
+      : null,
+  );
+  if (import.meta.env.DEV && devSpeedLevel !== null) speedFx.level = devSpeedLevel; // dev only: ?speed=0.8 for screenshots
+  chaseCamera.extraFov = speedFx.level * speedfx.fovKick;
+  chaseCamera.roll = speedFx.roll;
+  chaseCamera.shake = speedOn ? Math.min(1, speedFx.shake + speedFx.level * 0.12) * speedfx.shake : 0;
+  postFx.setSpeed(speedFx.level, speedfx);
+
   const q = followed.mesh.quaternion;
   camTarget.copy(followed.mesh.position);
   camTarget.y = Math.max(camTarget.y, -1);
-  chaseCamera.update(camTarget, 2 * Math.atan2(q.y, q.w), frameDt);
+  // Tumble camera: stop swinging with the spinning car, and shake once when the fall starts
+  chaseCamera.tumbling = followed.tumbling;
+  if (followed.tumbling && tumbleKickFor !== followed) {
+    // Shake and slow-mo depend on how fast the car was going: a fast fall gets the full effect, a slow
+    // slide off the edge gets a light version (a strong slow-mo on a slow fall looks like a crawl).
+    const v = followed.body.linvel();
+    const strength = Math.min(1, Math.hypot(v.x, v.z) / SLOWMO_FULL_SPEED);
+    const lerp = (slow: number, fast: number) => slow + (fast - slow) * strength;
+    chaseCamera.kick(lerp(KICK_SLIDE, KICK_FAST));
+    slowTarget = lerp(SLOWMO_SCALE_SLIDE, SLOWMO_SCALE);
+    slowLeft = lerp(SLOWMO_TIME_SLIDE, SLOWMO_TIME);
+  }
+  tumbleKickFor = followed.tumbling ? followed : null;
 
-  platform.update(frameDt);
+  // Heading from where the nose points (stays right while the car is pitched, rolled or tumbling)
+  const camYaw = Math.atan2(2 * q.w * q.y + 2 * q.z * q.x, 1 - 2 * (q.x * q.x + q.y * q.y));
+  chaseCamera.update(camTarget, camYaw, frameDt);
+
+  const flickerParams = isGlassTheme(settings.theme) ? wire5 : wire;
+  const flickerOn = (settings.theme === "cyberpunk4" || isGlassTheme(settings.theme)) && flickerParams.edgeFlicker;
+  platform.setWarning(
+    flickerOn && rounds.state === "running" && rounds.timeLeft < flickerParams.flickerTime,
+    rounds.targetColor,
+  );
+  platform.update(frameDt * timeScale); // tile animations follow the game's speed
   skyWorld.update(frameDt, now / 1000);
+  synthWorld.update(frameDt, now / 1000);
   hud.setTime(rounds.timeLeft, rounds.state === "running");
 
   debugText.textContent =
@@ -438,7 +573,8 @@ function animate() {
     `fps       ${fpsSmooth.toFixed(0)}\n` +
     `worst ms  ${worstShown.toFixed(1)}`;
 
-  renderer.render(scene, camera);
+  if (postFx.enabled) postFx.render(now / 1000);
+  else renderer.render(scene, camera);
   requestAnimationFrame(animate);
 }
 animate();

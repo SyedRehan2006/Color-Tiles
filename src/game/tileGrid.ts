@@ -208,21 +208,56 @@ export class TileGrid {
     return i >= 0 && this.alive[i];
   }
 
-  // True if the whole car is over solid tiles: all four corners of its footprint (halfWidth x
-  // halfLength, turned by yaw; yaw 0 faces -Z). A car half on a vanished tile does not count.
-  isFootprintSolid(x: number, z: number, yaw: number, halfWidth: number, halfLength: number) {
+  // Fraction (0..1) of the car's footprint (halfWidth x halfLength, turned by yaw; yaw 0 faces -Z)
+  // that is over solid tiles. The footprint is sampled on a grid of points about 0.5 m apart, so it
+  // works for any car size and notices a hole between the corners of a big car.
+  footprintCoverage(x: number, z: number, yaw: number, halfWidth: number, halfLength: number) {
+    return this.footprintSample(x, z, yaw, halfWidth, halfLength, this.scratch).coverage;
+  }
+  private scratch = { coverage: 1, voidX: 0, voidZ: 0 };
+
+  // Same sampling, but also says which way the void is: (voidX, voidZ) is the unit direction from the
+  // car's center toward the part of the footprint that is NOT over a tile (0, 0 when fully supported).
+  footprintSample(
+    x: number,
+    z: number,
+    yaw: number,
+    halfWidth: number,
+    halfLength: number,
+    out: { coverage: number; voidX: number; voidZ: number },
+  ) {
     const fx = -Math.sin(yaw);
     const fz = -Math.cos(yaw);
     const rx = Math.cos(yaw);
     const rz = -Math.sin(yaw);
-    for (const a of [-1, 1]) {
-      for (const b of [-1, 1]) {
+    const nw = Math.min(16, Math.max(2, Math.ceil(halfWidth * 4)));
+    const nl = Math.min(32, Math.max(2, Math.ceil(halfLength * 4)));
+    let solid = 0;
+    let vx = 0;
+    let vz = 0;
+    for (let i = 0; i < nl; i++) {
+      const a = ((i + 0.5) / nl) * 2 - 1; // -1..1 along the length
+      for (let j = 0; j < nw; j++) {
+        const b = ((j + 0.5) / nw) * 2 - 1; // -1..1 across the width
         const px = x + fx * halfLength * a + rx * halfWidth * b;
         const pz = z + fz * halfLength * a + rz * halfWidth * b;
-        if (!this.isSolidAt(px, pz)) return false;
+        if (this.isSolidAt(px, pz)) solid++;
+        else {
+          vx += px - x;
+          vz += pz - z;
+        }
       }
     }
-    return true;
+    out.coverage = solid / (nw * nl);
+    const len = Math.hypot(vx, vz);
+    out.voidX = len > 1e-6 ? vx / len : 0;
+    out.voidZ = len > 1e-6 ? vz / len : 0;
+    return out;
+  }
+
+  // True if enough of the car is over solid tiles to stand (minSupport 0.5 = half or more).
+  isFootprintSolid(x: number, z: number, yaw: number, halfWidth: number, halfLength: number, minSupport = 0.5) {
+    return this.footprintCoverage(x, z, yaw, halfWidth, halfLength) >= minSupport;
   }
 
   // The color under a point, or null if there is no tile (off the platform or vanished)

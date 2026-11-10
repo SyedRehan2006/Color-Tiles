@@ -3,10 +3,12 @@ import type { DriveInput } from "./input";
 import type { TileGrid } from "./tileGrid";
 import { settings } from "./settings";
 
+const FIXED_STEP = 1 / 60; // the physics tick (same as FIXED_DT in main.ts)
+
 // Starting values from docs/mechanics/01_driving.md. All are placeholders to tune by feel.
 // The world's gravity must be 36 m/s^2 for the jump numbers below to make sense.
 export const CAR_PARAMS = {
-  maxForward: 20, // m/s
+  maxForward: 40, // m/s
   maxReverse: 10, // m/s
   accel: 40, // m/s^2
   brake: 40, // m/s^2 (W while rolling backward)
@@ -36,9 +38,12 @@ export const CAR_PARAMS = {
   // Height of the car body's center when resting on the floor (half the car's height)
   rideHeight: 0.25,
 
-  // Car footprint (half sizes, matches the collider). The car only stands if all four corners are on solid tiles.
+  // Car footprint (half sizes at scale 1, matches the collider and the model)
   halfWidth: 0.5,
   halfLength: 1,
+  // The car stands while at least this fraction of its footprint is over solid tiles, and falls
+  // below it (0.5 = it falls once half of it hangs over the void)
+  minSupport: 0.5,
 };
 
 // Reads DriveInput and drives one Rapier body. Per physics tick, call:
@@ -53,35 +58,62 @@ export class CarController {
   private coyote = 0; // seconds of "still counts as grounded" left
   private jumpBuffered = 0; // seconds of "jump was pressed" left
   private reverseHold = 0; // seconds S has been held while stopped
+  private sample = { coverage: 1, voidX: 0, voidZ: 0 };
   private body: RigidBody;
   private grid: TileGrid;
   private p: typeof CAR_PARAMS;
 
   grounded = false;
   drifting = false;
+  slip = 0; // sideways speed before grip acts on it, m/s (for the tire effects)
+  hardBraking = false; // braking from a fast speed (for the tire effects)
 
   constructor(body: RigidBody, grid: TileGrid, params = CAR_PARAMS) {
     this.body = body;
     this.grid = grid;
-    this.p = params;
+    this.p = { ...params }; // own copy, so one car's scale doesn't change the others
+    this.base = { rideHeight: params.rideHeight, halfWidth: params.halfWidth, halfLength: params.halfLength };
+  }
+
+  private base: { rideHeight: number; halfWidth: number; halfLength: number };
+
+  // Scale the footprint and ride height (the car's size multiplier from the settings panel)
+  setScale(s: number) {
+    this.p.rideHeight = this.base.rideHeight * s;
+    this.p.halfWidth = this.base.halfWidth * s;
+    this.p.halfLength = this.base.halfLength * s;
   }
 
   // Call right after world.step(). Holds the car on the floor, or lets it fall.
-  resolveGround() {
+  // Returns the footprint sample (coverage and the direction of the void) when the car just lost its
+  // footing at floor height: that is the moment it starts to tumble off the edge. Otherwise null.
+  resolveGround(): { coverage: number; voidX: number; voidZ: number } | null {
     const pos = this.body.translation();
     const v = this.body.linvel();
     const q = this.body.rotation();
     const yaw = 2 * Math.atan2(q.y, q.w);
-    const solid = this.grid.isFootprintSolid(pos.x, pos.z, yaw, this.p.halfWidth, this.p.halfLength);
+    const s = this.grid.footprintSample(pos.x, pos.z, yaw, this.p.halfWidth, this.p.halfLength, this.sample);
+    const solid = s.coverage >= settings.edgeSupport;
     // Below about half a meter the car has dropped past the tile edge and can't climb back onto it
     if (solid && pos.y <= this.p.rideHeight && pos.y > -0.5 && v.y <= 0) {
       // Landed (or resting): put the car exactly on the floor and stop its fall
       this.body.setTranslation({ x: pos.x, y: this.p.rideHeight, z: pos.z }, true);
-      this.body.setLinvel({ x: v.x, y: 0, z: v.z }, true);
+      // Edge pull: a car with part of itself over the void slides toward it, harder the more is out.
+      // This is what makes hanging at the edge costly. 0 = no pull (the car just sits there).
+      let vx = v.x;
+      let vz = v.z;
+      if (settings.edgePull > 0 && s.coverage < 1) {
+        const pull = settings.edgePull * (1 - s.coverage) * FIXED_STEP;
+        vx += s.voidX * pull;
+        vz += s.voidZ * pull;
+      }
+      this.body.setLinvel({ x: vx, y: 0, z: vz }, true);
       this.grounded = true;
-    } else {
-      this.grounded = false;
+      return null;
     }
+    this.grounded = false;
+    // Lost its footing while at floor height (or lower, still within reach of the tile): tumble
+    return !solid && pos.y <= this.p.rideHeight + 0.05 && pos.y > -0.5 ? s : null;
   }
 
   update(input: DriveInput, dt: number) {
@@ -128,6 +160,9 @@ export class CarController {
     }
     if (this.drifting) vF *= Math.exp(-p.dragHandbrake * dt);
     if (input.throttle >= 0) this.reverseHold = 0; // S released: the next reverse waits again
+
+    this.slip = Math.abs(vL);
+    this.hardBraking = input.throttle < 0 && vF > 8;
 
     // Grip: sideways speed fades. exp() keeps this the same at any frame rate.
     const grip = !this.grounded ? p.airGrip : this.drifting ? p.gripHandbrake : p.gripNormal;

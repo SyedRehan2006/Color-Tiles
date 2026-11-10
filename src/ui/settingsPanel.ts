@@ -60,6 +60,9 @@ const BOT_FIELDS: Field[] = [
 // Driving applies live
 const DRIVE_FIELDS: Field[] = [
   { key: "reverseDelay", label: "Reverse delay after stopping", step: 0.1, unit: "s" },
+  { key: "carScale", label: "Car scale (1 = default size)", step: 0.1, unit: "x" },
+  { key: "edgeSupport", label: "Edge: share of car on tiles to stay up", step: 0.05, unit: "" },
+  { key: "edgePull", label: "Edge: slide toward the void", step: 2, unit: "m/s²" },
 ];
 const COLLISION_FIELDS: Field[] = [
   { key: "bumpStrength", label: "Bump push strength", step: 1, unit: "m/s" },
@@ -78,6 +81,8 @@ export class SettingsPanel {
   private showTimerBox: HTMLInputElement;
   private shrinkBox: HTMLInputElement;
   private collisionsBox: HTMLInputElement;
+  private knockBox!: HTMLInputElement;
+  private slowBox!: HTMLInputElement;
   private onShowTimerChange: (show: boolean) => void;
   private onPlatformChange: () => void;
   private onVisualChange: () => void;
@@ -176,7 +181,35 @@ export class SettingsPanel {
     });
     collRow.append(collText, this.collisionsBox);
     this.panel.appendChild(collRow);
-    for (const f of COLLISION_FIELDS) this.addField(f, false);
+
+    const knockRow = document.createElement("label");
+    knockRow.className = "sp-row";
+    const knockText = document.createElement("span");
+    knockText.textContent = "Falling cars knock others";
+    knockRow.title = "A car tumbling off an edge hits and shoves cars still driving. Off = it passes through them. Applies right away.";
+    this.knockBox = document.createElement("input");
+    this.knockBox.type = "checkbox";
+    this.knockBox.addEventListener("change", () => {
+      settings.knockOffCars = this.knockBox.checked;
+      saveSettings();
+      this.knockBox.blur();
+    });
+    knockRow.append(knockText, this.knockBox);
+    this.panel.appendChild(knockRow);
+
+    const slowRow = document.createElement("label");
+    slowRow.className = "sp-row";
+    const slowText = document.createElement("span");
+    slowText.textContent = "Slow-mo when a car falls";
+    this.slowBox = document.createElement("input");
+    this.slowBox.type = "checkbox";
+    this.slowBox.addEventListener("change", () => {
+      settings.slowMo = this.slowBox.checked;
+      saveSettings();
+      this.slowBox.blur();
+    });
+    slowRow.append(slowText, this.slowBox);
+    this.panel.appendChild(slowRow);    for (const f of COLLISION_FIELDS) this.addField(f, false);
 
     const platformTitle = document.createElement("div");
     platformTitle.innerHTML = `<div class="sp-sep"></div><h3>Platform</h3>
@@ -313,7 +346,8 @@ export class SettingsPanel {
     this.showTimerBox.checked = settings.showTimer;
     this.shrinkBox.checked = settings.shrinking;
     this.collisionsBox.checked = settings.collisions;
-    this.shadowsBox.checked = settings.shadows;
+    this.knockBox.checked = settings.knockOffCars;
+    this.slowBox.checked = settings.slowMo;    this.shadowsBox.checked = settings.shadows;
     for (const [key, select] of this.selects) select.value = settings[key];
   }
 }

@@ -49,7 +49,7 @@ Each round runs in this order:
 
 ## Cars, driving and controls
 
-- **Collisions:** none for now. Cars pass through each other and look see-through (a "ghost" look) when they overlap. This can be revisited after playtesting.
+- **Collisions:** off by default. Cars pass through each other and look see-through (a "ghost" look) when they overlap. Optional bumping exists behind a setting. Cars that fall off an edge tumble and can knock other cars (setting, on by default). Update 2026-11-10: edge rule, tumble, knock-offs and fall effects are in `docs/mechanics/03_falling.md`.
 - **Driving feel:** drifty, arcade-style. It will be tested and tuned.
 - **Jump rule:** if a car lands over empty space, it falls. Jump has no cooldown, but a car can only jump while on the ground (no mid-air jumps). Decided 2026-10-26.
 - **Jump length:** jumps are made a little shorter than the first proposal (which covered about 9 m, roughly 4 tiles, at top speed). Working target: about 6 to 7 m at top speed (air time around 0.5 s). The exact value is tuned by feel. Decided 2026-10-26.
@@ -111,4 +111,5 @@ These defaults were proposed to fill gaps in the design. None has been accepted 
 
 - **Stroop mode:** the text says "RED" but is written in blue. Players go by the word, not the ink color, or the other way round.
 - **Car collisions:** bumping or pushing other cars, if playtests show the game needs more interaction.
+- **Bots avoiding edges (skipped for now, revisit later, 2026-11-10):** bots drive straight at their target tile and have no idea where the platform edge is, so with the tougher edge rules (car falls below 70% on tiles, plus a pull toward the void) they tend to drive off the rim by themselves. The plan, each part separate: (1) aim at the inner part of a rim tile; (2) look ahead along the heading and limit speed so the bot can still stop before the edge; (3) recovery: when a bot leans (wheels out) it steers and throttles or reverses back toward the middle; (4) scale all of it by skill (pros careful, newbie and chaotic bots barely) so some bots still fall, and add one "Bot edge care" setting to tune it. Keep some falls: bots that never fall make the match dull. Code to change: `src/game/bot.ts` (`goTo`, `pickTarget`, `wander`).
 - **Reasons to come back:** car skins and colors, a leaderboard, and more car-focused modes.
