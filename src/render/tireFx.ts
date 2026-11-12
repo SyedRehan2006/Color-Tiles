@@ -10,6 +10,7 @@ const MARK_SEGMENTS = 1600; // skid mark pieces alive at once (oldest are reused
 const SMOKE_MAX = 500;
 const SPARK_MAX = 300;
 const MARK_Y = 0.03; // just above the tile surface
+// Rear wheel positions of a car at scale 1 (they match the models in retroCars.ts); multiplied by the car's scale
 const WHEEL_BACK = 0.62; // rear wheels sit this far behind the car's middle
 const WHEEL_SIDE = 0.43;
 
@@ -22,6 +23,7 @@ export interface FxCar {
   isPlayer: boolean;
   y: number;
   carColor: number;
+  carScale?: number; // size multiplier of the car (default 1): wheel positions, marks and puffs scale with it
 }
 
 const markVertex = /* glsl */ `
@@ -278,12 +280,12 @@ export class TireFx {
     for (const m of [this.neonMat, this.rubberMat]) m.uniforms.uKillStart.value = this.time;
   }
 
-  private addSegment(a: THREE.Vector2, bx: number, bz: number, strength: number, color: THREE.Color) {
+  private addSegment(a: THREE.Vector2, bx: number, bz: number, strength: number, color: THREE.Color, width: number) {
     const k = this.segIdx;
     this.segIdx = (this.segIdx + 1) % MARK_SEGMENTS;
     this.aP0.array.set([a.x, MARK_Y, a.y], k * 3);
     this.aP1.array.set([bx, MARK_Y, bz], k * 3);
-    this.aData.array.set([this.time, strength, tirefx.markWidth, 0], k * 4);
+    this.aData.array.set([this.time, strength, width, 0], k * 4);
     this.aColor.array.set([color.r, color.g, color.b], k * 3);
   }
 
@@ -321,12 +323,17 @@ export class TireFx {
         continue;
       }
 
+      // Heading from where the nose points (the mesh also leans over edges, so the plain yaw formula is off)
       const q = car.mesh.quaternion;
-      const yaw = 2 * Math.atan2(q.y, q.w);
+      const yaw = Math.atan2(2 * q.w * q.y + 2 * q.z * q.x, 1 - 2 * (q.x * q.x + q.y * q.y));
       const s = Math.sin(yaw);
       const co = Math.cos(yaw);
-      const baseX = car.mesh.position.x + s * WHEEL_BACK;
-      const baseZ = car.mesh.position.z + co * WHEEL_BACK;
+      const sc = car.carScale ?? 1; // wheel positions, marks and puffs follow the car's size
+      const wheelBack = WHEEL_BACK * sc;
+      const wheelSide = WHEEL_SIDE * sc;
+      const markWidth = p.markWidth * sc;
+      const baseX = car.mesh.position.x + s * wheelBack;
+      const baseZ = car.mesh.position.z + co * wheelBack;
       const near = car.isPlayer || Math.hypot(car.mesh.position.x - focus.x, car.mesh.position.z - focus.z) < 30;
 
       const skidding = c.grounded && car.y < 0.6 && (c.drifting || c.slip > 2.5 || c.hardBraking);
@@ -336,14 +343,14 @@ export class TireFx {
 
       for (let w = 0; w < 2; w++) {
         const side = w === 0 ? -1 : 1;
-        const x = baseX + co * side * WHEEL_SIDE;
-        const z = baseZ - s * side * WHEEL_SIDE;
+        const x = baseX + co * side * wheelSide;
+        const z = baseZ - s * side * wheelSide;
         if (strength > 0) {
           const last = st.last[w];
           if (last) {
             const d = Math.hypot(x - last.x, z - last.y);
             if (p.marks && d > 0.12 && d < 3) {
-              this.addSegment(last, x, z, strength, this.tmpColor);
+              this.addSegment(last, x, z, strength, this.tmpColor, markWidth);
               wrote = true;
               last.set(x, z);
             } else if (d >= 3) last.set(x, z);
@@ -356,7 +363,7 @@ export class TireFx {
               this.smoke.spawn(
                 x, 0.1, z,
                 vel.x * 0.25 + (Math.random() - 0.5) * 0.6, 0.5 + Math.random() * 0.5, vel.z * 0.25 + (Math.random() - 0.5) * 0.6,
-                this.time, p.smokeLife * (0.7 + Math.random() * 0.6), p.smokeSize * (0.7 + Math.random() * 0.6), this.smokeColor,
+                this.time, p.smokeLife * (0.7 + Math.random() * 0.6), p.smokeSize * sc * (0.7 + Math.random() * 0.6), this.smokeColor,
               );
             }
           }
@@ -367,7 +374,7 @@ export class TireFx {
               this.sparks.spawn(
                 x, 0.08, z,
                 vel.x * 0.4 + (Math.random() - 0.5) * 3, 2 + Math.random() * 3, vel.z * 0.4 + (Math.random() - 0.5) * 3,
-                this.time, 0.3 + Math.random() * 0.25, 0.16, this.tmpColor,
+                this.time, 0.3 + Math.random() * 0.25, 0.16 * sc, this.tmpColor,
               );
             }
           }
@@ -381,7 +388,7 @@ export class TireFx {
             const a = Math.random() * Math.PI * 2;
             this.smoke.spawn(
               x, 0.1, z, Math.cos(a) * 1.8, 0.3 + Math.random() * 0.5, Math.sin(a) * 1.8,
-              this.time, p.smokeLife * 0.8, p.smokeSize * 0.8, this.smokeColor,
+              this.time, p.smokeLife * 0.8, p.smokeSize * sc * 0.8, this.smokeColor,
             );
           }
         }

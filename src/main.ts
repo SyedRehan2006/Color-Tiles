@@ -25,7 +25,15 @@ import { createPostFx } from "./render/postFx";
 import { VisualPanel, loadVisualConfig } from "./ui/visualPanel";
 import { Hud } from "./ui/hud";
 import { SettingsPanel } from "./ui/settingsPanel";
+import { GameplayPanel } from "./ui/gameplayPanel";
+import { Menus } from "./ui/menus";
+import { POKI } from "./build";
 import { loadSettings, settings } from "./game/settings";
+import { audio } from "./audio/audio";
+import { sfx } from "./audio/sfx";
+import { music } from "./audio/music";
+import { CarAudio } from "./audio/carAudio";
+import { installButtonClicks, mountMuteButton } from "./audio/audioUi";
 
 // Rapier is WebAssembly: it must finish loading before we use it
 await RAPIER.init();
@@ -109,39 +117,80 @@ const platform = createTilePlatform(scene, tileGrid);
 // Rounds: pick a color, lay out the tiles, count down. The HUD shows the called color and time.
 const hud = new Hud();
 hud.setTimerVisible(settings.showTimer);
-// Gear button, bottom right: the second function runs when the platform settings change
-new SettingsPanel((show) => hud.setTimerVisible(show), () => applyPlatformSettings(), () => applyVisuals());
+// Sound: starts on the first key press or click (browsers do not allow it earlier)
+audio.install();
+installButtonClicks(() => sfx.click());
+mountMuteButton(156); // speaker button under the pause button (M toggles it too)
+music.play();
+const carAudio = new CarAudio(); // engine hums and tire squeal
+// The three tuning panels are left out of the Poki build
+if (!POKI) {
+  // Gear button, bottom right: the second function runs when the platform settings change
+  new SettingsPanel((show) => hud.setTimerVisible(show), () => applyPlatformSettings(), () => applyVisuals());
+  // Sliders button, bottom right: tuning of the difficulty director (shrinking, target tiles, timer, sudden death)
+  new GameplayPanel();
+}
 // Palette button, bottom right: live tuning of the cyberpunk 2 look (tiles, glow, sky)
-const visualPanel = new VisualPanel(() => applyLook());
+const visualPanel = POKI ? null : new VisualPanel(() => applyLook());
 const rounds = new RoundController(tileGrid, settings);
-rounds.onTilesVanish = (tiles) => {
+rounds.onTilesVanish = (tiles, ring) => {
   platform.vanish(tiles);
   tireFx.fadeAll(); // marks over vanishing tiles must not hang in the air
+  if (ring) sfx.ringFall();
+  else sfx.tilesVanish();
 };
-rounds.onTilesReturn = (tiles) => platform.restore(tiles);
-rounds.onRoamStart = () => {
-  // Only the middle is left: the cars still standing win
-  if (rounds.round > 0 && settings.shrinking && tileGrid.ringsLeft <= 1 && !matchOver) {
-    finishBySurvivors();
-    return;
-  }
-  hud.showRoam();
+rounds.onTilesReturn = (tiles) => {
+  platform.restore(tiles);
+  sfx.tilesReturn();
+};
+rounds.aliveCount = () => aliveCount();
+rounds.carCount = () => racers.length;
+// A round is over: cars already past the point of no return (fell in the last moments) count as falls
+// of this round, then the director learns how it went and sets the pressure for the next one.
+rounds.onRoundSettled = () => {
   if (matchOver) return;
-  // A car that fell drops back in when the roam period starts. So does a car standing on the ring
-  // that just went: it is lifted off before the ring falls, so the shrink never makes a car fall.
   for (const r of racers) {
-    // Already past the point of no return (fell in the last moments of the round): the fall counts
     if (!r.fallen && !r.eliminated && r.y < DOOMED_DEPTH) loseLife(r);
   }
+  rounds.director.endRound(tileGrid.ringsLeft, aliveCount());
+};
+rounds.onRoamStart = () => {
+  hud.showRoam();
+  if (matchOver) return;
+  // Last resort against a stalemate: every car loses a life each round (docs/mechanics/04_rounds.md)
+  if (rounds.director.drain) {
+    hud.notify("HEART DRAIN - EVERYONE LOSES A LIFE");
+    sfx.alarm();
+    for (const r of racers) if (!r.fallen && !r.eliminated) loseLife(r);
+    if (matchOver) return;
+  }
+  // A car that fell drops back in when the roam period starts. So does a car standing on the ring
+  // that just went: it is lifted off before the ring falls, so the shrink never makes a car fall.
+  const used: number[] = [];
   for (const r of racers) {
     if (r.eliminated) continue;
     const onRemovedTile = !r.fallen && !tileGrid.present[tileGrid.tileAt(r.x, r.z)];
-    if (r.fallen || onRemovedTile) dropAt(r);
+    if (r.fallen || onRemovedTile) dropAt(r, used);
   }
 };
+let lastTargets = 0; // target tiles last round, to announce when they drop
+let overtimeShown = false;
 rounds.onRoundStart = () => {
   platform.refreshColors();
-  hud.showRound(rounds.round, rounds.targetName, tileHex(rounds.targetColor), rounds.shrinksAtEnd);
+  hud.showRound(rounds.round, rounds.targetName, tileHex(rounds.targetColor), rounds.shrinkPlanned);
+  sfx.announce(rounds.targetColor);
+  if (rounds.director.enabled) {
+    if (rounds.director.overtime && !overtimeShown) {
+      overtimeShown = true;
+      hud.notify("OVERTIME - THE TIMER KEEPS SHRINKING");
+      sfx.notice();
+    } else if (lastTargets > 0 && rounds.targets < lastTargets) {
+      hud.notify("FEWER SAFE TILES!");
+      sfx.notice();
+    }
+  }
+  lastTargets = rounds.targets;
+  updateMusicIntensity();
 };
 // (rounds.start() is called further down, once the car exists)
 
@@ -161,6 +210,9 @@ let matchOver = false; // a winner is decided: rounds stop
 const botCars: { x: number; z: number }[] = []; // positions of the cars on the platform, rebuilt every tick for the bots
 let overlayUp = false; // the end screen is showing (Play Again / Enter restarts)
 let lastAlive = -1;
+let quietDrops = false; // the start-of-match drops make no sound (the start jingle covers them)
+let matchClock = 0; // s of game time since the match started (for the tie-break)
+let suddenShown = false; // the "sudden death" banner was shown this match
 
 function buildRacers() {
   for (const r of racers) r.dispose();
@@ -219,17 +271,35 @@ function applyVisuals() {
   applyLook();
   fitShadow();
   applyRacerLooks();
-  visualPanel.refresh(); // the panel shows values for the current theme and time of day
+  visualPanel?.refresh(); // the panel shows values for the current theme and time of day
 }
 
-// Drop a car from the sky onto a random tile (not one that `used` already has, if possible)
-function dropAt(r: Racer, used?: Set<number>) {
-  let tile = tileGrid.randomPresentTile();
-  for (let tries = 0; used && used.has(tile) && tries < 30; tries++) tile = tileGrid.randomPresentTile();
-  used?.add(tile);
+// The music builds up as the match tightens: more pressure from the director and fewer cars left = busier
+function updateMusicIntensity() {
+  if (matchOver) return;
+  const pressure = Math.min(1, rounds.director.level / 8);
+  const thin = racers.length > 1 ? 1 - (aliveCount() - 1) / (racers.length - 1) : 0;
+  music.setIntensity(0.25 + 0.4 * pressure + 0.35 * thin);
+}
+
+// Drop a car from the sky onto a tile: never on the outer ring, as far as possible from the cars
+// standing on the platform and from the cars already dropped in this batch (`used`).
+function dropAt(r: Racer, used: number[] = []) {
+  const occupied = used.slice();
+  for (const o of racers) {
+    if (o === r || o.fallen || o.eliminated) continue;
+    const t = tileGrid.tileAt(o.x, o.z);
+    if (t >= 0) occupied.push(t);
+  }
+  const tile = tileGrid.pickSpawnTile(occupied);
+  used.push(tile);
   const { x, z } = tileGrid.centerOf(tile);
-  r.respawnAt(x, z);
-  if (r === followed) chaseCamera.snap();
+  // The player faces the sun and mountains (the sun sits at -Z turned by sunAngle, so that yaw points at it)
+  r.respawnAt(x, z, r === player ? (scenery.sunAngle * Math.PI) / 180 : undefined);
+  if (r === followed) {
+    chaseCamera.snap();
+    if (!quietDrops) sfx.respawn();
+  }
 }
 
 // Cars that ran out of lives since the last check (handled once per tick)
@@ -238,11 +308,29 @@ const justOut: Racer[] = [];
 // A car fell off the platform (or onto a vanished tile). Every fall costs a life, in a round or in
 // the free roam. r.fallen makes this happen once per fall, so a fall can never cost two lives.
 function loseLife(r: Racer) {
+  if (r.doomedAt < 0) r.doomedAt = matchClock;
+  r.livesAtFall = r.lives;
+  r.tieRoll = Math.random();
   r.markFallen();
   r.lives--;
+  if (!settings.botRespawn && r !== player) r.lives = 0; // bots don't respawn: first fall is out
+  if (rounds.state !== "roam") rounds.director.fell++; // a fall in the round (or its result pause)
+  // Sudden death: with few cars left, the next fall is the last one (docs/mechanics/04_rounds.md)
+  const sudden = racers.length > settings.suddenDeathAt && aliveCount() <= settings.suddenDeathAt;
+  if (sudden && r.lives > 0) {
+    if (!suddenShown) {
+      suddenShown = true;
+      hud.notify("SUDDEN DEATH - NO MORE RESPAWNS");
+      sfx.alarm();
+    }
+    r.lives = 0;
+  }
   if (r === player) {
     hud.setLives(r.lives, MAX_LIVES);
-    if (r.lives > 0) hud.flashMessage(`${r.lives} ${r.lives === 1 ? "LIFE" : "LIVES"} LEFT`, 0xff4d6d);
+    if (r.lives > 0) {
+      hud.flashMessage(`${r.lives} ${r.lives === 1 ? "LIFE" : "LIVES"} LEFT`, 0xff4d6d);
+      sfx.lifeLost();
+    }
   }
   if (r.lives <= 0) {
     r.eliminate();
@@ -264,32 +352,61 @@ function aliveCount() {
   return n;
 }
 
+const lastEnd = { title: "", text: "" };
 function showEnd(title: string, text: string) {
+  const first = !overlayUp;
+  if (title === "YOU WIN!") sfx.win();
+  else if (first) sfx.lose();
+  if (matchOver) music.setIntensity(0.1); // calm music under the end screen
   overlayUp = true;
+  lastEnd.title = title;
+  lastEnd.text = text;
   hud.showGameOver(text, restartMatch, title);
 }
 
-// You are out of lives. `aliveNow` = cars still in after this tick's eliminations.
+// Rounds you lived through (a fall in the roam comes after the round it follows)
+function survivedText() {
+  const survived = Math.max(rounds.state === "roam" ? rounds.round : rounds.round - 1, 0);
+  return `survived ${survived} round${survived === 1 ? "" : "s"}`;
+}
+
+// You are out of lives but the match goes on. `aliveNow` = cars still in after this tick's eliminations.
 function playerOut(aliveNow: number) {
-  const survived = Math.max(rounds.round - 1, 0);
-  const rd = `survived ${survived} round${survived === 1 ? "" : "s"}`;
   if (racers.length === 1) {
     matchOver = true;
-    showEnd("GAME OVER", `You ${rd}`);
-  } else if (aliveNow === 0) {
-    showEnd("DRAW", `Everyone fell together - ${rd}`);
+    showEnd("GAME OVER", `You ${survivedText()}`);
   } else {
-    showEnd("GAME OVER", `You placed ${ordinal(aliveNow + 1)} of ${racers.length} - ${rd}`);
+    showEnd("GAME OVER", `You placed ${ordinal(aliveNow + 1)} of ${racers.length} - ${survivedText()}`);
   }
 }
 
-// Only the middle of the platform is left: the cars still standing win together
-function finishBySurvivors() {
+// Who outlasted whom when cars fall in the same tick: the later fall, then more lives, then luck
+function outlasted(a: Racer, b: Racer) {
+  if (a.doomedAt !== b.doomedAt) return a.doomedAt - b.doomedAt;
+  if (a.livesAtFall !== b.livesAtFall) return a.livesAtFall - b.livesAtFall;
+  return a.tieRoll - b.tieRoll;
+}
+
+// Exactly one car is left, or the last cars fell together and the tie-break picked one. `fellNow` are the
+// cars eliminated this tick; `aliveNow` is how many cars are still in (0 or 1) after them.
+function endMatch(fellNow: Racer[], aliveNow: number) {
   matchOver = true;
-  const winners = racers.filter((r) => !r.eliminated && !r.fallen);
-  if (winners.includes(player)) {
-    const others = winners.length - 1;
-    showEnd("YOU WIN!", others > 0 ? `You and ${others} other car${others === 1 ? "" : "s"} survived all ${rounds.round} rounds` : `You survived all ${rounds.round} rounds`);
+  const ranked = [...fellNow].sort((a, b) => outlasted(b, a)); // best first
+  const winner = aliveNow === 1 ? racers.find((r) => !r.eliminated)! : ranked[0];
+  if (winner.eliminated) {
+    // Won the tie-break: back on the platform for the victory
+    winner.eliminated = false;
+    winner.lives = Math.max(1, winner.lives);
+    dropAt(winner);
+  }
+  if (winner === player) {
+    hud.setLives(player.lives, MAX_LIVES);
+    showEnd("YOU WIN!", `Last car standing after ${rounds.round} round${rounds.round === 1 ? "" : "s"}`);
+  } else if (ranked.includes(player)) {
+    const place = aliveNow + ranked.indexOf(player) + 1;
+    showEnd("GAME OVER", `You placed ${ordinal(place)} of ${racers.length} - ${survivedText()}`);
+  } else if (overlayUp) {
+    showEnd(lastEnd.title, `${lastEnd.text} - a bot won the match`); // you were already out
   }
 }
 
@@ -303,13 +420,23 @@ function restartMatch() {
   tileGrid.resetPlatform(); // the rings that fell come back
   tileGrid.shuffleColors();
   platform.rebuild();
-  const used = new Set<number>();
   for (const r of racers) {
     r.reset();
-    dropAt(r, used);
+    r.fallen = true; // not standing anywhere yet, so old positions don't count when spreading the drops
   }
+  const used: number[] = [];
+  quietDrops = true;
+  for (const r of racers) dropAt(r, used);
+  quietDrops = false;
+  sfx.matchStart();
+  music.setIntensity(0.3);
   hud.setLives(MAX_LIVES, MAX_LIVES);
   lastAlive = -1;
+  matchClock = 0;
+  suddenShown = false;
+  overtimeShown = false;
+  lastTargets = 0;
+  justOut.length = 0;
   rounds.start();
 }
 
@@ -321,8 +448,41 @@ function applyPlatformSettings() {
   fitShadow();
 }
 
+// Game state: the game only simulates while "playing". The main menu is its own page (index.html).
+let gameState: "playing" | "paused" = "playing";
+
+function startPlaying() {
+  gameState = "playing";
+  menus.hideAll();
+  last = performance.now(); // no catch-up for the time spent paused
+}
+function pauseGame() {
+  if (gameState !== "playing" || overlayUp) return;
+  gameState = "paused";
+  menus.showPause();
+}
+
+const menus = new Menus({
+  onPause: pauseGame,
+  onResume: startPlaying,
+  onRestart: () => {
+    restartMatch();
+    startPlaying();
+  },
+  onQuitToMenu: () => {
+    location.href = "index.html"; // the menu page (relative, so it works under the /Color-Tiles/ base path)
+  },
+});
+
 window.addEventListener("keydown", (e) => {
-  if (overlayUp && e.code === "Enter") restartMatch();
+  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || e.target instanceof HTMLTextAreaElement) return;
+  if (e.code === "Escape" || e.code === "KeyP") {
+    if (e.repeat) return;
+    if (gameState === "playing") pauseGame();
+    else startPlaying();
+    return;
+  }
+  if (gameState === "playing" && overlayUp && e.code === "Enter") restartMatch();
 });
 
 buildRacers();
@@ -357,7 +517,7 @@ const input = {
 const debugText = document.createElement("pre");
 debugText.style.cssText =
   "position:fixed;top:8px;left:8px;margin:0;color:#fff;font:14px monospace;text-shadow:0 0 3px #000;pointer-events:none";
-document.body.appendChild(debugText);
+if (!POKI) document.body.appendChild(debugText);
 let jumpCount = 0;
 
 const FIXED_DT = 1 / 60;
@@ -377,6 +537,8 @@ const KICK_SLIDE = 0.12; // ... slide off
 let slowTarget = SLOWMO_SCALE; // game speed the current slow-mo eases to
 let slowLeft = 0; // real seconds of slow-mo left
 let timeScale = 1; // current game speed (eased)
+const SPECTATE_DELAY = 1.2; // s after a fall before the camera moves on to another car
+let fallenTime = 0; // s the player has been waiting to respawn
 let tumbleKickFor: Racer | null = null; // the car the camera already shook for (so it shakes once per fall)
 
 // Frame-time diagnostics (temporary)
@@ -385,6 +547,12 @@ let worstFrameMs = 0;
 let worstShown = 0;
 let worstTimer = 0;
 let lastDrive = input.read();
+// Sound bookkeeping
+let soundCar: Racer | null = null; // the car the jump/landing sounds follow
+let wasGrounded = true;
+let airTicks = 0; // physics ticks the watched car has been in the air
+let tickState = "";
+let tickWhole = -1;
 
 function animate() {
   const now = performance.now();
@@ -395,7 +563,7 @@ function animate() {
   // the screen effects stay in real time. The speed eases in and out instead of jumping.
   slowLeft = Math.max(0, slowLeft - frameDt);
   timeScale += ((slowLeft > 0 && settings.slowMo ? slowTarget : 1) - timeScale) * (1 - Math.exp(-12 * frameDt));
-  accumulator += frameDt * timeScale;
+  if (gameState === "playing") accumulator += frameDt * timeScale; // menus freeze the game
   last = now;
 
   fpsSmooth += (1 / Math.max(rawDt, 0.001) - fpsSmooth) * 0.05;
@@ -448,15 +616,45 @@ function animate() {
         const v = r.body.linvel();
         const strength = Math.min(1, Math.hypot(v.x, v.z) / SLOWMO_FULL_SPEED); // 0 = slid off, 1 = fast
         edgeFx.burst(r, strength);
+        const heard = carAudio.spatial(r); // other cars' falls are heard from where they are
+        sfx.tumble(strength, r === followed ? 1 : heard.vol * 0.6, r === followed ? 0 : heard.pan);
       }
     }
-    if (settings.collisions) resolveBumps(racers, settings.bumpStrength);
+    // Jump and landing sounds for the car you watch
+    if (followed !== soundCar) {
+      soundCar = followed;
+      wasGrounded = followed.controller.grounded;
+      airTicks = 0;
+    }
+    if (!followed.fallen && !followed.tumbling) {
+      const grounded = followed.controller.grounded;
+      if (grounded) {
+        if (!wasGrounded && airTicks > 10) sfx.land(airTicks / 30);
+        airTicks = 0;
+      } else {
+        airTicks++;
+        if (wasGrounded && followed.body.linvel().y > 6) sfx.jump();
+      }
+      wasGrounded = grounded;
+    } else {
+      airTicks = 0;
+      wasGrounded = false;
+    }
+    if (settings.collisions) {
+      resolveBumps(racers, settings.bumpStrength, (a, _b, speed) => {
+        const heard = carAudio.spatial(a);
+        sfx.bump(speed, heard.vol, heard.pan);
+      });
+    }
     if (!matchOver) rounds.update(FIXED_DT); // may drop cars back in when a roam starts
 
     // Cars that fell off the platform (or onto a vanished tile). r.fallen makes this happen once
     // per fall, so a fall can never cost two lives.
+    matchClock += FIXED_DT;
     for (const r of racers) {
-      if (!r.fallen && r.y < FALL_DEPTH) loseLife(r);
+      // Remember when a car passed the point of no return: the tie-break compares these times
+      if (!r.fallen && r.doomedAt < 0 && r.y < DOOMED_DEPTH) r.doomedAt = matchClock;
+      if (!r.fallen && r.y < FALL_DEPTH && !matchOver) loseLife(r);
       if (r.fallen && !r.eliminated && r.respawnDelay > 0) {
         r.respawnDelay -= FIXED_DT;
         if (r.respawnDelay <= 0 && !matchOver) dropAt(r);
@@ -464,21 +662,25 @@ function animate() {
     }
     if (justOut.length > 0) {
       const aliveNow = aliveCount();
-      if (justOut.includes(player)) playerOut(aliveNow);
+      const fellNow = justOut.slice();
       justOut.length = 0;
-      // Last car standing (needs at least two cars to start with)
+      if (fellNow.some((r) => r !== player)) sfx.carOut();
       if (racers.length > 1 && aliveNow <= 1 && !matchOver) {
-        matchOver = true;
-        const winner = racers.find((r) => !r.eliminated);
-        if (winner === player) {
-          showEnd("YOU WIN!", `Last car standing after ${Math.max(rounds.round - 1, 0)} rounds`);
-        }
+        endMatch(fellNow, aliveNow); // last car standing; if the last ones fell together the tie-break picks
+      } else if (fellNow.includes(player) && !matchOver) {
+        playerOut(aliveNow);
       }
     }
     const alive = aliveCount();
     if (alive !== lastAlive) {
       lastAlive = alive;
       hud.setAlive(alive, racers.length);
+      if (!suddenShown && racers.length > settings.suddenDeathAt && alive <= settings.suddenDeathAt && !matchOver) {
+        suddenShown = true;
+        hud.notify("SUDDEN DEATH - NO MORE RESPAWNS");
+        sfx.alarm();
+      }
+      updateMusicIntensity();
     }
 
     for (const r of racers) r.endTick();
@@ -494,25 +696,53 @@ function animate() {
   tireFx.update(frameDt, racers, followed.mesh.position);
   edgeFx.update(frameDt * timeScale, racers, followed.mesh.position); // follows the slow-mo
 
-  // The camera follows you, or a car still in the match once you are out
-  if (player.eliminated) {
-    const next = racers.find((r) => !r.eliminated && !r.fallen) ?? racers.find((r) => !r.eliminated);
-    if (next && next !== followed) {
-      followed = next;
-      chaseCamera.snap();
+  // The camera follows you. While you have no car (fell and waiting to respawn, or out of lives) it does what
+  // the Camera settings say: orbit the platform, or watch a car still standing. After a fall it waits a
+  // moment first, so you see the fall and a quick roam respawn has no camera cut.
+  fallenTime = player.fallen && !player.eliminated ? fallenTime + frameDt : 0;
+  const standing = (r: Racer) => !r.eliminated && !r.fallen;
+  const spectateMode = matchOver
+    ? null
+    : player.eliminated
+      ? settings.eliminatedCamera
+      : fallenTime > SPECTATE_DELAY
+        ? settings.fallenCamera
+        : null;
+  const orbiting = spectateMode === "orbit";
+  chaseCamera.orbitMode = orbiting;
+  chaseCamera.orbitSize = tileGrid.size * tileGrid.tileSize;
+  if (orbiting) {
+    followed = player; // not used for the view; keeps the effects tied to a known car
+  } else if (spectateMode === "watch a car") {
+    if (player.eliminated) {
+      const next = racers.find(standing) ?? racers.find((r) => !r.eliminated);
+      if (next && next !== followed) {
+        followed = next;
+        chaseCamera.snap();
+      }
+    } else if (followed === player || !standing(followed)) {
+      const next = racers.find((r) => r !== player && standing(r));
+      if (next) followed = next; // no snap: the camera glides over to it
     }
   } else if (followed !== player) {
     followed = player;
     chaseCamera.snap();
   }
+  // "SPECTATING" pill: with a respawn countdown while you wait to drop back in, without one when you are out
+  const respawnIn = player.eliminated
+    ? null
+    : Math.ceil(rounds.state === "roam" ? Math.max(player.respawnDelay, 0) : rounds.secondsToNextRoam);
+  hud.setSpectate(spectateMode !== null, respawnIn);
 
   // Chase camera follows the smoothed position and heading. It stops following a car that falls
   // (it never goes below y = -1), so you watch the car drop away instead of chasing it down.
   // Speed effects (cyberpunk 6): how fast the followed car feels, and the camera extras that follow from it
   const speedOn = isSpeedTheme(settings.theme) && speedfx.enabled;
+  // A car that fell (or is tumbling off the edge) no longer drives, so its speed is stale: let the effects fade out
+  const carGone = orbiting || followed.fallen || followed.tumbling || followed.y < DOOMED_DEPTH;
   speedFx.update(
     frameDt,
-    speedOn
+    speedOn && !carGone
       ? {
           speed: followed.controller.forwardSpeed,
           grounded: followed.controller.grounded,
@@ -555,12 +785,33 @@ function animate() {
     flickerOn && rounds.state === "running" && rounds.timeLeft < flickerParams.flickerTime,
     rounds.targetColor,
   );
+  // Sound: engines, tire squeal, the countdown ticks, and the music muffles during slow-mo and pause
+  if (gameState === "playing") {
+    carAudio.update(frameDt, racers, followed, followed === player ? lastDrive.throttle : 0.5, 0.55 + 0.45 * timeScale);
+    audio.setMuffle(700 + timeScale * timeScale * 19300);
+    if (!matchOver) {
+      const whole = Math.ceil(rounds.timeLeft);
+      if (rounds.state !== tickState) {
+        tickState = rounds.state;
+        tickWhole = whole;
+      } else if (whole !== tickWhole) {
+        tickWhole = whole;
+        if (whole >= 1 && whole <= 3) {
+          if (rounds.state === "running") sfx.countdown(whole);
+          else if (rounds.state === "roam") sfx.roamTick();
+        }
+      }
+    }
+  } else {
+    carAudio.silence();
+    audio.setMuffle(700);
+  }
   platform.update(frameDt * timeScale); // tile animations follow the game's speed
   skyWorld.update(frameDt, now / 1000);
   synthWorld.update(frameDt, now / 1000);
   hud.setTime(rounds.timeLeft, rounds.state === "running");
 
-  debugText.textContent =
+  if (!POKI) debugText.textContent =
     `throttle  ${lastDrive.throttle}\n` +
     `steer     ${lastDrive.steer}\n` +
     `handbrake ${lastDrive.handbrake}\n` +
@@ -570,6 +821,15 @@ function animate() {
     `grounded  ${player.controller.grounded}\n` +
     `drifting  ${player.controller.drifting}\n` +
     `tile      ${tileGrid.colorAt(player.mesh.position.x, player.mesh.position.z)?.name ?? "none"}\n` +
+    `-- rounds --\n` +
+    `round     ${rounds.round} (${rounds.state})\n` +
+    `pressure  ${rounds.director.level}\n` +
+    `targets   ${rounds.targets}\n` +
+    `rings     ${tileGrid.ringsLeft}${rounds.shrinkPlanned ? " (falls after)" : ""}\n` +
+    `alive     ${lastAlive}/${racers.length}\n` +
+    `fell last ${rounds.director.lastFell}\n` +
+    `no-shrink ${rounds.director.roundsSinceShrink}\n` +
+    `final rds ${rounds.director.finalRounds}\n` +
     `fps       ${fpsSmooth.toFixed(0)}\n` +
     `worst ms  ${worstShown.toFixed(1)}`;
 

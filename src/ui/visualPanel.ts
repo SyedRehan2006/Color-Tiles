@@ -7,6 +7,8 @@ import { edgefx, grade, reflection, speedfx, tirefx, type EdgeFxParams, type Gra
 import { scenery, type SceneryParams } from "../render/sceneryParams";
 import { CAMERA_PARAMS } from "../render/chaseCamera";
 import { BAKED_CONFIG } from "../render/bakedConfig";
+import { POKI } from "../build";
+import { POKI_VISUAL } from "../pokiConfig";
 
 // A second button (palette icon, next to the gear) that opens a panel for tuning the cyberpunk 2 and 3 looks live:
 // the neon tiles and glow (shared by both), the cyberpunk 2 sky/light colors, and the cyberpunk 3 scenery. Values are saved in this browser. "Copy values"
@@ -38,6 +40,7 @@ const STYLE = `
 
 // New key: an older save (overwritten by an accidental reset) must not hide the baked look
 const STORAGE_KEY = "car-color-tiles-visual-v2";
+const CAMERA_KEY = "car-color-tiles-camera-v2";
 // The tuned look becomes the default (applyConfig is hoisted; the snapshot below then includes it)
 applyConfig(BAKED_CONFIG as unknown as Partial<VisualConfig>);
 // The values the game starts with (taken before any saved changes are loaded)
@@ -56,7 +59,7 @@ const DEFAULTS = {
   tirefx: { ...tirefx },
   edgefx: { ...edgefx },
   speedfx: { ...speedfx },
-  camera: { distance: CAMERA_PARAMS.distance, height: CAMERA_PARAMS.height, fov: CAMERA_PARAMS.fov },
+  camera: cameraNow(),
 };
 
 interface VisualConfig {
@@ -74,8 +77,9 @@ interface VisualConfig {
   tirefx: TireFxParams;
   edgefx: EdgeFxParams;
   speedfx: SpeedFxParams;
-  camera: { distance: number; height: number; fov: number };
+  camera: CameraConfig;
 }
+interface CameraConfig { distance: number; height: number; lookAhead: number; lookHeight: number; fov: number }
 
 function currentConfig(): VisualConfig {
   return {
@@ -93,8 +97,13 @@ function currentConfig(): VisualConfig {
     tirefx: { ...tirefx },
     edgefx: { ...edgefx },
     speedfx: { ...speedfx },
-    camera: { distance: CAMERA_PARAMS.distance, height: CAMERA_PARAMS.height, fov: CAMERA_PARAMS.fov },
+    camera: cameraNow(),
   };
+}
+
+function cameraNow(): CameraConfig {
+  const { distance, height, lookAhead, lookHeight, fov } = CAMERA_PARAMS;
+  return { distance, height, lookAhead, lookHeight, fov };
 }
 
 function applyConfig(c: Partial<VisualConfig>) {
@@ -117,9 +126,19 @@ function applyConfig(c: Partial<VisualConfig>) {
 
 // Call once at startup, before the first applyLook()
 export function loadVisualConfig() {
+  if (POKI) {
+    applyConfig(POKI_VISUAL as unknown as Partial<VisualConfig>); // Poki build: exact values from src/pokiConfig.ts, never saved tuning
+    return;
+  }
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) applyConfig(JSON.parse(raw) as Partial<VisualConfig>);
+    if (raw) {
+      const saved = JSON.parse(raw) as Partial<VisualConfig>;
+      delete saved.camera; // the camera has its own save (below), so old saved angles don't hide the new default
+      applyConfig(saved);
+    }
+    const cam = localStorage.getItem(CAMERA_KEY);
+    if (cam) applyConfig({ camera: JSON.parse(cam) });
   } catch {
     // Ignore a missing or damaged save
   }
@@ -128,6 +147,7 @@ export function loadVisualConfig() {
 function save() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(currentConfig()));
+    localStorage.setItem(CAMERA_KEY, JSON.stringify(currentConfig().camera));
   } catch {
     // Storage can be blocked; the values just won't be remembered
   }
@@ -394,7 +414,9 @@ export class VisualPanel {
     // Camera (all themes): the default view looks steeply down, so little sky shows. Lower it to see the scenery.
     const cam = this.group("Camera (all themes)");
     this.slider(cam, "Distance behind", () => CAMERA_PARAMS.distance, (v) => (CAMERA_PARAMS.distance = v), 6, 40, 0.5);
-    this.slider(cam, "Height", () => CAMERA_PARAMS.height, (v) => (CAMERA_PARAMS.height = v), 2, 30, 0.5);
+    this.slider(cam, "Height", () => CAMERA_PARAMS.height, (v) => (CAMERA_PARAMS.height = v), 1, 30, 0.25);
+    this.slider(cam, "Look ahead (m)", () => CAMERA_PARAMS.lookAhead, (v) => (CAMERA_PARAMS.lookAhead = v), 0, 60, 0.5);
+    this.slider(cam, "Look up/down (m)", () => CAMERA_PARAMS.lookHeight, (v) => (CAMERA_PARAMS.lookHeight = v), -5, 15, 0.25);
     this.slider(cam, "Field of view", () => CAMERA_PARAMS.fov, (v) => (CAMERA_PARAMS.fov = v), 40, 100, 1);
 
     // Actions

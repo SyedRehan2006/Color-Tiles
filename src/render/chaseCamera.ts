@@ -2,9 +2,10 @@ import * as THREE from "three";
 
 // Tunable. Placeholders to adjust by feel.
 export const CAMERA_PARAMS = {
-  distance: 12, // m behind the car
-  height: 9, // m above the car
-  lookAhead: 3, // m in front of the car that the camera looks at
+  distance: 10, // m behind the car
+  height: 3.5, // m above the car
+  lookAhead: 14, // m in front of the car that the camera looks at (more = flatter view, more sky)
+  lookHeight: 0, // m above the car's origin that the camera looks at (more = tilts up)
   positionFollow: 8, // 1/s, higher = camera sticks closer to its spot
   headingFollow: 4, // 1/s, higher = camera swings behind the car faster
   fov: 60, // vertical field of view in degrees
@@ -15,6 +16,12 @@ export const CAMERA_PARAMS = {
   tumbleShake: 0.9, // m: how far the camera shakes at full shake
   tumbleFovPunch: 7, // degrees of extra field of view at full shake, fading out with it
   tumbleBlendSpeed: 4, // 1/s: how quickly the camera switches to and from the tumble framing
+
+  // Orbit camera (while you wait to respawn): a slow circle around the platform centre
+  orbitSpeed: 0.25, // rad/s (about 25 s per lap)
+  orbitRadius: 0.8, // x the platform's side length
+  orbitHeight: 0.45, // x the platform's side length
+  orbitFollow: 2.5, // 1/s: how quickly the camera glides to the orbit
 };
 
 // Follows a target from behind and above. Call update() once per rendered frame.
@@ -85,6 +92,12 @@ export class ChaseCamera {
   // Set every frame by main.ts: the followed car is tumbling off an edge. The camera stops swinging
   // around with the spinning car, pulls back a little and looks straight at it.
   tumbling = false;
+  // Set every frame by main.ts: circle the platform instead of following a car
+  orbitMode = false;
+  orbitCenter = new THREE.Vector3();
+  orbitSize = 60; // m: side length of the platform
+  private orbitAngle = 0;
+  private wasOrbiting = false;
   private tumbleBlend = 0; // 0 = normal chase, 1 = tumble framing (eased)
   private trauma = 0; // 0..1 impact shake, fades out on its own
 
@@ -103,6 +116,28 @@ export class ChaseCamera {
     if (Math.abs(this.camera.fov - fov) > 1e-4) {
       this.camera.fov = fov;
       this.camera.updateProjectionMatrix();
+    }
+
+    // Orbit mode: circle the platform instead of following the car. Leaving it jumps back to the car.
+    if (this.orbitMode) {
+      if (!this.wasOrbiting) {
+        this.wasOrbiting = true;
+        // Start the circle where the camera already is, so it does not swing around first
+        this.orbitAngle = Math.atan2(this.position.z - this.orbitCenter.z, this.position.x - this.orbitCenter.x);
+      }
+      this.orbitAngle += p.orbitSpeed * dt;
+      const r = this.orbitSize * p.orbitRadius;
+      const k = 1 - Math.exp(-p.orbitFollow * dt);
+      this.position.x += (this.orbitCenter.x + Math.cos(this.orbitAngle) * r - this.position.x) * k;
+      this.position.y += (this.orbitCenter.y + this.orbitSize * p.orbitHeight - this.position.y) * k;
+      this.position.z += (this.orbitCenter.z + Math.sin(this.orbitAngle) * r - this.position.z) * k;
+      this.lookTarget.lerp(this.orbitCenter, 1 - Math.exp(-4 * dt));
+      this.applyView();
+      return;
+    }
+    if (this.wasOrbiting) {
+      this.wasOrbiting = false;
+      this.snap();
     }
 
     if (!this.started) {
@@ -142,10 +177,16 @@ export class ChaseCamera {
 
     this.lookTarget.set(
       targetPos.x + fx * p.lookAhead * (1 - tb), // looks straight at the car while it tumbles
-      targetPos.y,
+      targetPos.y + p.lookHeight * (1 - tb),
       targetPos.z + fz * p.lookAhead * (1 - tb),
     );
 
+    this.applyView();
+  }
+
+  // Put the camera at the smoothed position, looking at the look target, plus the cinematic extras
+  private applyView() {
+    const p = this.p;
     this.camera.position.copy(this.position);
     this.camera.lookAt(this.lookTarget);
     // Cinematic extras (set by main.ts from the speed effects; zero = off). They only change what is drawn,

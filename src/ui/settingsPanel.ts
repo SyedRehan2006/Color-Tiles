@@ -61,6 +61,8 @@ const BOT_FIELDS: Field[] = [
 const DRIVE_FIELDS: Field[] = [
   { key: "reverseDelay", label: "Reverse delay after stopping", step: 0.1, unit: "s" },
   { key: "carScale", label: "Car scale (1 = default size)", step: 0.1, unit: "x" },
+  { key: "coastSteerSpeed", label: "Coasting: full steering only above", step: 1, unit: "m/s" },
+  { key: "coastBrake", label: "Coasting: extra slowdown", step: 0.5, unit: "m/s²" },
   { key: "edgeSupport", label: "Edge: share of car on tiles to stay up", step: 0.05, unit: "" },
   { key: "edgePull", label: "Edge: slide toward the void", step: 2, unit: "m/s²" },
 ];
@@ -83,6 +85,7 @@ export class SettingsPanel {
   private collisionsBox: HTMLInputElement;
   private knockBox!: HTMLInputElement;
   private slowBox!: HTMLInputElement;
+  private botRespawnBox!: HTMLInputElement;
   private onShowTimerChange: (show: boolean) => void;
   private onPlatformChange: () => void;
   private onVisualChange: () => void;
@@ -158,6 +161,13 @@ export class SettingsPanel {
     this.addSelect("touchSteer", "Steering", false);
     this.addSelect("touchPedals", "Pedals", false);
 
+    const camTitle = document.createElement("div");
+    camTitle.innerHTML = `<div class="sp-sep"></div><h3>Camera</h3>
+      <p class="sp-note">What the camera does while you have no car. Orbit = slow circle around the platform. Applies right away.</p>`;
+    this.panel.appendChild(camTitle);
+    this.addSelect("fallenCamera", "After a fall (waiting to respawn)", false);
+    this.addSelect("eliminatedCamera", "When eliminated", false);
+
     const driveTitle = document.createElement("div");
     driveTitle.innerHTML = `<div class="sp-sep"></div><h3>Driving</h3>
       <p class="sp-note">S brakes first, then reverses after this delay. Applies right away.</p>`;
@@ -223,6 +233,20 @@ export class SettingsPanel {
       <p class="sp-note">Bot count restarts the match. Skill applies from the next round.</p>`;
     this.panel.appendChild(botTitle);
     for (const f of BOT_FIELDS) this.addField(f, f.key === "botCount");
+    const botRespawnRow = document.createElement("label");
+    botRespawnRow.className = "sp-row";
+    const botRespawnText = document.createElement("span");
+    botRespawnText.textContent = "Bots respawn";
+    botRespawnRow.title = "Off = a bot that falls is out immediately, whatever lives it has left. Applies right away.";
+    this.botRespawnBox = document.createElement("input");
+    this.botRespawnBox.type = "checkbox";
+    this.botRespawnBox.addEventListener("change", () => {
+      settings.botRespawn = this.botRespawnBox.checked;
+      saveSettings();
+      this.botRespawnBox.blur();
+    });
+    botRespawnRow.append(botRespawnText, this.botRespawnBox);
+    this.panel.appendChild(botRespawnRow);
 
     const shrinkTitle = document.createElement("div");
     shrinkTitle.innerHTML = `<div class="sp-sep"></div><h3>Shrinking</h3>
@@ -243,6 +267,7 @@ export class SettingsPanel {
     shrinkRow.append(shrinkText, this.shrinkBox);
     this.panel.appendChild(shrinkRow);
     for (const f of SHRINK_FIELDS) this.addField(f, false);
+
 
     const reset = document.createElement("button");
     reset.className = "sp-reset";
@@ -344,10 +369,10 @@ export class SettingsPanel {
   private refresh() {
     for (const [key, input] of this.inputs) input.value = String(settings[key]);
     this.showTimerBox.checked = settings.showTimer;
-    this.shrinkBox.checked = settings.shrinking;
-    this.collisionsBox.checked = settings.collisions;
+    this.shrinkBox.checked = settings.shrinking;    this.collisionsBox.checked = settings.collisions;
     this.knockBox.checked = settings.knockOffCars;
-    this.slowBox.checked = settings.slowMo;    this.shadowsBox.checked = settings.shadows;
+    this.slowBox.checked = settings.slowMo;
+    this.botRespawnBox.checked = settings.botRespawn;    this.shadowsBox.checked = settings.shadows;
     for (const [key, select] of this.selects) select.value = settings[key];
   }
 }

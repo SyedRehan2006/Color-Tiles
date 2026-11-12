@@ -56,6 +56,10 @@ export class Racer {
   eliminated = false; // out of lives for good
   fallen = false; // fell off; waiting to drop back in (or eliminated)
   respawnDelay = 0; // s until a car that fell during the roam drops back in
+  // Tie-break when the last cars fall together (docs/mechanics/04_rounds.md, section 6)
+  doomedAt = -1; // match clock time the car passed the point of no return (-1 = not falling)
+  livesAtFall = 0; // lives it had just before its last fall
+  tieRoll = 0; // random last resort
 
   // Render interpolation: drawn between the previous and current physics state
   private prevPos = new THREE.Vector3();
@@ -301,8 +305,9 @@ export class Racer {
   }
 
   // Drop the car from the sky onto a tile, facing the middle of the platform
-  respawnAt(x: number, z: number) {
-    const yaw = Math.hypot(x, z) > 0.5 ? Math.atan2(x, z) : 0;
+  // facing: optional yaw override (radians, 0 = facing -Z)
+  respawnAt(x: number, z: number, facing?: number) {
+    const yaw = facing ?? (Math.hypot(x, z) > 0.5 ? Math.atan2(x, z) : 0);
     if (this.tumbling) {
       this.tumbling = false;
       this.settle = 0;
@@ -321,6 +326,7 @@ export class Racer {
     this.mesh.visible = true;
     this.fallen = false;
     this.respawnDelay = 0;
+    this.doomedAt = -1;
     this.teleported = true;
   }
 
@@ -340,6 +346,7 @@ export class Racer {
   reset() {
     this.lives = this.maxLives;
     this.eliminated = false;
+    this.doomedAt = -1;
   }
 
   // Call at the start of every physics tick, before moving anything

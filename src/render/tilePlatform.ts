@@ -49,6 +49,9 @@ export function createTilePlatform(scene: THREE.Scene, grid: TileGrid) {
   const color = new THREE.Color();
   let count = 0;
   let tiles!: THREE.InstancedMesh;
+  // What each tile looks like right now when no animation is running: 1 = full size and upright, 0 = hidden.
+  // update() compares this with the grid data and fixes any tile that disagrees.
+  let shown = new Uint8Array(0);
   let warnOn = false; // are the vanishing tiles flickering right now (cyberpunk 4)
   let clock = 0;
 
@@ -68,11 +71,12 @@ export function createTilePlatform(scene: THREE.Scene, grid: TileGrid) {
     geometry.setAttribute("aWarn", new THREE.InstancedBufferAttribute(new Float32Array(count), 1)); // 1 = about to vanish
     warnOn = false;
     tiles = new THREE.InstancedMesh(geometry, material, count);
+    shown = new Uint8Array(count);
     for (let i = 0; i < count; i++) {
-      const { x, z } = grid.centerOf(i);
-      dummy.position.set(x, -THICKNESS / 2, z);
-      dummy.updateMatrix();
-      tiles.setMatrixAt(i, dummy.matrix);
+      // writeTile sets position, rotation AND scale, so nothing is left over from an earlier animation
+      const solid = grid.present[i] && grid.alive[i];
+      writeTile(i, -THICKNESS / 2, solid ? 1 : 0, 0);
+      shown[i] = solid ? 1 : 0;
       color.setHex(tileHex(grid.colors[i]));
       tiles.setColorAt(i, color);
     }
@@ -122,13 +126,29 @@ export function createTilePlatform(scene: THREE.Scene, grid: TileGrid) {
     clock += dt;
     wireMaterial.uniforms.uTime.value = clock;
     glassMaterial.uniforms.uTime.value = clock;
-    if (animations.size === 0) return;
+    let dirty = false;
+    // Self-healing: a tile with no animation must match the grid (solid = shown, otherwise hidden).
+    // If an event was missed or overwritten, the tile is snapped back here instead of staying wrong.
+    for (let i = 0; i < count; i++) {
+      if (animations.has(i)) continue;
+      const want = grid.present[i] && grid.alive[i] ? 1 : 0;
+      if (shown[i] !== want) {
+        writeTile(i, -THICKNESS / 2, want, 0);
+        shown[i] = want;
+        dirty = true;
+      }
+    }
+    if (animations.size === 0) {
+      if (dirty) tiles.instanceMatrix.needsUpdate = true;
+      return;
+    }
     for (const [i, a] of animations) {
       a.t += dt;
       if (a.vanishing) {
         const k = Math.min(a.t / VANISH_TIME, 1);
         if (k >= 1) {
           writeTile(i, -THICKNESS / 2, 0, 0); // scale 0 hides it
+          shown[i] = 0;
           animations.delete(i);
         } else {
           const tilt = (i % 2 === 0 ? 1 : -1) * k * 0.6;
@@ -137,7 +157,10 @@ export function createTilePlatform(scene: THREE.Scene, grid: TileGrid) {
       } else {
         const k = Math.min(a.t / RETURN_TIME, 1);
         writeTile(i, -THICKNESS / 2, k, 0);
-        if (k >= 1) animations.delete(i);
+        if (k >= 1) {
+          shown[i] = 1;
+          animations.delete(i);
+        }
       }
     }
     tiles.instanceMatrix.needsUpdate = true;

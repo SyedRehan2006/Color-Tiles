@@ -34,6 +34,8 @@ Each round runs in this order:
 
 **Roam period (decided 2026-11-03):** between rounds, after the tiles return, everyone gets 6 seconds to drive around freely before the next color is called. The match also begins with a roam. The tiles keep the previous round's colors during the roam and reshuffle the moment the next color is called (user approved). Falling off the platform during the roam costs no life; the car respawns after about 1 second.
 
+**Update 2026-11-11:** the match ends only when exactly one car is left (no shared win). Platform size, target tiles and the timer adapt to the cars alive and to how many fell (a "difficulty director"). Sudden death at 3 or fewer cars is confirmed, and ties are broken by fall order, then lives. Details and numbers: `docs/mechanics/04_rounds.md`.
+
 ## Lives, respawns and sudden death
 
 - **Lives:** 3 in total (2 respawns). Falling a third time eliminates you, and you spectate.

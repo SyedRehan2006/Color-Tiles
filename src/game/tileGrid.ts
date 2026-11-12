@@ -177,6 +177,32 @@ export class TileGrid {
     return list[Math.floor(Math.random() * list.length)];
   }
 
+  // A tile to drop a car onto: on the platform, never on the outer ring (unless only one ring is
+  // left), and as far as it can be from the tiles in `occupied` (cars standing or just dropped).
+  // Best-candidate sampling like layoutRound: the farthest of a few random picks.
+  pickSpawnTile(occupied: number[]) {
+    const minRing = this.ringsLeft > 1 ? this.ringsRemoved + 1 : this.ringsRemoved;
+    const list: number[] = [];
+    for (let i = 0; i < this.present.length; i++) if (this.present[i] && this.ringOf(i) >= minRing) list.push(i);
+    if (list.length === 0) return this.randomPresentTile();
+    let best = list[0];
+    let bestDist = -1;
+    for (let t = 0; t < 12; t++) {
+      const tile = list[Math.floor(Math.random() * list.length)];
+      let nearest = Infinity;
+      for (const o of occupied) {
+        const dc = (tile % this.size) - (o % this.size);
+        const dr = Math.floor(tile / this.size) - Math.floor(o / this.size);
+        nearest = Math.min(nearest, dc * dc + dr * dr);
+      }
+      if (nearest > bestDist) {
+        bestDist = nearest;
+        best = tile;
+      }
+    }
+    return best;
+  }
+
   // Where the platform starts on the X and Z axes, so the platform is centered on (0, 0)
   get origin() {
     return (-this.size * this.tileSize) / 2;

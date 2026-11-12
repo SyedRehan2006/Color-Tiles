@@ -9,6 +9,11 @@ const STYLE = `
 .hud-color { font-size: 30px; font-weight: 800; letter-spacing: 1px; line-height: 1; }
 .hud-time { min-width: 56px; text-align: center; font-size: 46px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .hud-time.urgent { color: #ff5a5a; }
+.hud-spectate { position: absolute; top: 100px; left: 50%; transform: translateX(-50%); display: none; flex-direction: column; align-items: center; gap: 2px;
+  padding: 6px 20px; border-radius: 14px; background: rgba(20, 24, 40, 0.55); color: #fff; text-shadow: 0 2px 4px rgba(0,0,0,0.5); white-space: nowrap; }
+.hud-spectate.show { display: flex; }
+.hud-spectate-title { font-size: 13px; letter-spacing: 3px; opacity: 0.8; }
+.hud-spectate-time { font-size: 22px; font-weight: 800; letter-spacing: 1px; }
 .hud-round { position: absolute; top: 14px; right: 16px; color: #fff; font-size: 16px; font-weight: 700; text-shadow: 0 2px 4px rgba(0,0,0,0.6); }
 .hud-lives { position: absolute; top: 40px; right: 16px; color: #ff4d6d; font-size: 28px; letter-spacing: 3px; text-shadow: 0 2px 4px rgba(0,0,0,0.6); }
 .hud-lives .lost { color: #fff; opacity: 0.3; }
@@ -22,6 +27,10 @@ const STYLE = `
   background: #ffd23f; color: #222; cursor: pointer; box-shadow: 0 4px 0 rgba(0,0,0,0.35); }
 .hud-over button:hover { background: #ffe066; }
 .hud-over small { opacity: 0.7; font-size: 14px; }
+.hud-notice { position: absolute; top: 92px; left: 50%; transform: translateX(-50%); padding: 6px 16px; border-radius: 12px; white-space: nowrap;
+  background: rgba(20, 24, 40, 0.7); color: #fff; font-size: 18px; font-weight: 800; letter-spacing: 2px; opacity: 0; }
+.hud-notice.go { animation: hud-notice 3s ease-out; }
+@keyframes hud-notice { 0% { opacity: 0; } 8% { opacity: 1; } 80% { opacity: 1; } 100% { opacity: 0; } }
 .hud-flash { position: absolute; top: 30%; left: 50%; transform: translate(-50%, -50%); font-size: 84px; font-weight: 900; letter-spacing: 4px;
   color: #fff; opacity: 0; text-shadow: 0 4px 0 rgba(0,0,0,0.35), 0 0 24px rgba(0,0,0,0.4); -webkit-text-stroke: 3px rgba(0,0,0,0.35); }
 .hud-flash.go { animation: hud-pop 1.1s ease-out; }
@@ -40,6 +49,7 @@ export class Hud {
   private time: HTMLDivElement;
   private roundLabel: HTMLDivElement;
   private flash: HTMLDivElement;
+  private notice: HTMLDivElement;
   private lives: HTMLDivElement;
   private alive: HTMLDivElement;
   private over: HTMLDivElement;
@@ -47,6 +57,9 @@ export class Hud {
   private overTitle: HTMLHeadingElement;
   private overButton: HTMLButtonElement;
   private shownSeconds = -1;
+  private spectate: HTMLDivElement;
+  private spectateTime: HTMLDivElement;
+  private spectateKey = "";
 
   constructor() {
     const style = document.createElement("style");
@@ -61,10 +74,12 @@ export class Hud {
         <div><div class="hud-label">GET TO</div><div class="hud-color"></div></div>
         <div class="hud-time"></div>
       </div>
+      <div class="hud-spectate"><div class="hud-spectate-title">SPECTATING</div><div class="hud-spectate-time"></div></div>
       <div class="hud-round"></div>
       <div class="hud-lives"></div>
       <div class="hud-alive"></div>
       <div class="hud-flash"></div>
+      <div class="hud-notice"></div>
       <div class="hud-over">
         <h1 class="hud-over-title">GAME OVER</h1>
         <p class="hud-over-text"></p>
@@ -77,14 +92,28 @@ export class Hud {
     this.label = root.querySelector(".hud-label")!;
     this.colorName = root.querySelector(".hud-color")!;
     this.time = root.querySelector(".hud-time")!;
+    this.spectate = root.querySelector(".hud-spectate")!;
+    this.spectateTime = root.querySelector(".hud-spectate-time")!;
     this.roundLabel = root.querySelector(".hud-round")!;
     this.flash = root.querySelector(".hud-flash")!;
+    this.notice = root.querySelector(".hud-notice")!;
     this.lives = root.querySelector(".hud-lives")!;
     this.alive = root.querySelector(".hud-alive")!;
     this.over = root.querySelector(".hud-over")!;
     this.overText = root.querySelector(".hud-over-text")!;
     this.overTitle = root.querySelector(".hud-over-title")!;
     this.overButton = root.querySelector(".hud-over button")!;
+  }
+
+  // The "SPECTATING" pill under the top bar. `show` false hides it. `respawnIn` is whole seconds until
+  // you drop back in, or null when you do not (eliminated). Only touches the page when something changes.
+  setSpectate(show: boolean, respawnIn: number | null) {
+    const key = show ? String(respawnIn) : "";
+    if (key === this.spectateKey) return;
+    this.spectateKey = key;
+    this.spectate.classList.toggle("show", show);
+    this.spectateTime.textContent = respawnIn === null ? "" : `RESPAWN IN ${respawnIn}s`;
+    this.spectateTime.style.display = respawnIn === null ? "none" : "";
   }
 
   // Hearts: filled for lives left, faded for lives lost
@@ -106,6 +135,14 @@ export class Hud {
     this.flash.classList.remove("go");
     void this.flash.offsetWidth; // restart the animation
     this.flash.classList.add("go");
+  }
+
+  // A small banner under the top bar for a rule change ("Fewer safe tiles", "Sudden death"). Fades by itself.
+  notify(text: string) {
+    this.notice.textContent = text;
+    this.notice.classList.remove("go");
+    void this.notice.offsetWidth; // restart the animation
+    this.notice.classList.add("go");
   }
 
   showGameOver(text: string, onPlayAgain: () => void, title = "GAME OVER") {

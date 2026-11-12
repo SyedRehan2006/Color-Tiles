@@ -13,7 +13,7 @@ const PASSES = 3; // resolve passes per tick, so a pile of three or more cars se
 
 // Call once per physics tick after world.step(). bumpStrength is extra separation speed (m/s) added to
 // every hit, so even a gentle touch pushes cars apart.
-export function resolveBumps(racers: Racer[], bumpStrength: number) {
+export function resolveBumps(racers: Racer[], bumpStrength: number, onHit?: (a: Racer, b: Racer, speed: number) => void) {
   for (let pass = 0; pass < PASSES; pass++) {
     // The kick only applies on the first pass, so it is not added three times
     const kick = pass === 0 ? bumpStrength : 0;
@@ -23,13 +23,13 @@ export function resolveBumps(racers: Racer[], bumpStrength: number) {
       for (let j = i + 1; j < racers.length; j++) {
         const b = racers[j];
         if (b.fallen || b.tumbling) continue;
-        collide(a, b, kick);
+        collide(a, b, kick, onHit);
       }
     }
   }
 }
 
-function collide(a: Racer, b: Racer, bumpStrength: number) {
+function collide(a: Racer, b: Racer, bumpStrength: number, onHit?: (a: Racer, b: Racer, speed: number) => void) {
   if (Math.abs(a.y - b.y) > MAX_HEIGHT_GAP * Math.max(a.carScale, b.carScale)) return;
 
   const dx = b.x - a.x;
@@ -81,6 +81,7 @@ function collide(a: Racer, b: Racer, bumpStrength: number) {
   const va = a.body.linvel();
   const vb = b.body.linvel();
   const closing = (va.x - vb.x) * nx + (va.z - vb.z) * nz; // > 0 means moving toward each other
+  if (closing > 1.5) onHit?.(a, b, closing); // for the sound effect
   const j2 = (closing > 0 ? ((1 + RESTITUTION) * closing) / 2 : 0) + bumpStrength / 2;
   if (j2 === 0) return;
   a.body.setLinvel({ x: va.x - nx * j2, y: va.y, z: va.z - nz * j2 }, true);

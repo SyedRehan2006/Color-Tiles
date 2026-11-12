@@ -44,5 +44,5 @@ export const BAKED_CONFIG = {
     enabled: true, shadowColor: 4930208, highlightColor: 14465279, tint: 0.5, contrast: 1, saturation: 1.1,
     vignette: 0.45, vignetteSize: 0.35, chromatic: 0, grain: 0.03,
   },
-  camera: { distance: 12, height: 9, fov: 60 },
+  camera: { distance: 10, height: 3.5, lookAhead: 14, lookHeight: 0, fov: 60 },
 };

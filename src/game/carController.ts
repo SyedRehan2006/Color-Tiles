@@ -58,6 +58,7 @@ export class CarController {
   private coyote = 0; // seconds of "still counts as grounded" left
   private jumpBuffered = 0; // seconds of "jump was pressed" left
   private reverseHold = 0; // seconds S has been held while stopped
+  private yawFullAt = CAR_PARAMS.yawFullSpeed; // m/s where steering reaches full strength right now (eased)
   private sample = { coverage: 1, voidX: 0, voidZ: 0 };
   private body: RigidBody;
   private grid: TileGrid;
@@ -157,6 +158,8 @@ export class CarController {
       }
     } else if (this.grounded) {
       vF *= Math.exp(-p.drag * dt);
+      // Coasting: an extra steady slowdown, so the slow creep at the end of a coast doesn't last for seconds
+      if (input.throttle === 0) vF = Math.sign(vF) * Math.max(0, Math.abs(vF) - settings.coastBrake * dt);
     }
     if (this.drifting) vF *= Math.exp(-p.dragHandbrake * dt);
     if (input.throttle >= 0) this.reverseHold = 0; // S released: the next reverse waits again
@@ -170,7 +173,12 @@ export class CarController {
 
     // Steering eases toward the input, and is weaker at low speed. Reversing flips it.
     this.steer += (input.steer - this.steer) * (1 - Math.exp(-p.steerSmoothing * dt));
-    const speedFactor = Math.min(Math.abs(vF) / p.yawFullSpeed, 1) * Math.sign(vF);
+    // While coasting (no throttle, not drifting) steering only reaches full strength at a higher speed, so a
+    // slowly rolling car turns gently instead of swinging round. Eased, so letting go of W doesn't jolt.
+    const coasting = input.throttle === 0 && !this.drifting;
+    const fullAt = coasting ? Math.max(p.yawFullSpeed, settings.coastSteerSpeed) : p.yawFullSpeed;
+    this.yawFullAt += (fullAt - this.yawFullAt) * (1 - Math.exp(-8 * dt));
+    const speedFactor = Math.min(Math.abs(vF) / this.yawFullAt, 1) * Math.sign(vF);
     const maxYaw = (this.drifting ? p.maxYawHandbrake : p.maxYaw) * (this.grounded ? 1 : p.airSteer);
     const yawRate = -this.steer * maxYaw * speedFactor; // +steer = turn right = clockwise = negative Y
 
